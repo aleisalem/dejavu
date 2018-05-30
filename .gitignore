@@ -1,0 +1,32 @@
+# ignore compiled python files
+*.pyc
+
+# ignore any APK's used for testing
+*.apk
+
+# ignore log file
+*.log
+
+# ignore .swp files
+*.swp
+
+# ignore data
+data/*
+
+# ignore python files in scripts directory
+files/scripts/*
+
+# Ignore "command" files
+*.command
+
+# Ignore CSV files
+*.csv
+
+# Ignore text files
+*.txt
+
+# Ignore back up files
+*.py_bak
+
+# Ignore database files
+*.db
