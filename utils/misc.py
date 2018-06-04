@@ -4,6 +4,7 @@ from dejavu.utils.data import *
 
 import random, string, os, glob, subprocess, time
 from datetime import datetime
+import Levenshtein
 
 
 def averageList(inputList, roundDigits=2):
@@ -14,6 +15,19 @@ def checkRoot():
         return False
     else:
         return True
+
+def stringRatio(str1, str2):
+    if len(str1+str2) < 1:
+        print "[*] THERE!!"
+        return 0.0
+    else:
+        return float(len(str1+str2) - Levenshtein.distance(str1, str2))/len(str1+str2)
+
+def listsRatio(list1, list2):
+    if len(list1+list2) < 1:
+        return 0.0
+    else:
+        return float(len(list1+list2) - len(set.intersection(set(list1), set(list2)))) / len(list1+list2)
 
 def flip(p):
     return 'YES' if random.random() < p else 'NO'
@@ -47,7 +61,7 @@ def sortDictByValue(d, reverse=False):
 
     return sortedDict
 
-def specificity_score(ground_truth, predicted, classes=(1, 0)):
+def specificity(ground_truth, predicted, classes=(1, 0)):
     if len(ground_truth) != len(predicted):
         return -1
     positive, negative = classes[0], classes[1]
