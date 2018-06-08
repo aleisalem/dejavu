@@ -33,9 +33,6 @@ def prettyPrint(msg, mode="info"):
     msg = "[*] %s. %s" % (msg, getTimestamp(includeDate=True))
     #print("\033[1;%sm%s\n%s\033[1;m" % (color, msg, '-'*len(msg))) # Print dashes under the message
     print("\033[1;%sm%s\033[1;m" % (color, msg))
-    # Log the message if LOGGING is enabled
-    if LOGGING == "ON" and mode != "info":
-        logEvent("%s: %s\n" % (getTimestamp(includeDate=True), msg))
 
 def prettyPrintError(ex):
     """ Pretty prints an error/exception message """

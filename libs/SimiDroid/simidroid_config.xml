@@ -1,0 +1,12 @@
+<SimiDroid>
+	<AndroidJarsPath>/home/aesalem/Android/Sdk</AndroidJarsPath>
+	<Plugin name="COMPONENT">
+		<LibrarySetPath>res/libs91.txt</LibrarySetPath>
+	</Plugin>
+	<!-- 
+	<Plugin name="COMPONENT" />
+	<Plugin name="RESOURCE" />
+	-->
+	
+	<Plugin name="RESOURCE" />
+</SimiDroid>
