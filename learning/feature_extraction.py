@@ -1,9 +1,9 @@
 #!/usr/bin/python
 
-from trout.conf.config import *
-from trout.utils.graphics import *
-from trout.utils.misc import *
-from trout.shared.constants import * 
+from dejavu.conf.config import *
+from dejavu.utils.graphics import *
+from dejavu.utils.misc import *
+from dejavu.shared.constants import * 
 import sklearn, numpy, json
 import os
 

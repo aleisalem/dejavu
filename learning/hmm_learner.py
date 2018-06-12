@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
-from trout.utils.graphics import *
-from trout.utils.misc import *
+from dejavu.utils.graphics import *
+from dejavu.utils.misc import *
 
 import ghmm
 import time

@@ -1,8 +1,8 @@
 #!/usr/bin/python
 
-from trout.utils.data import *
-from trout.utils.graphics import *
-from trout.utils.misc import *
+from dejavu.utils.data import *
+from dejavu.utils.graphics import *
+from dejavu.utils.misc import *
 
 import numpy as np
 from sklearn.manifold import TSNE
