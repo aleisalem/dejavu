@@ -3,8 +3,6 @@
 # Python modules
 import time, sys, os
 # dejavu modules
-from dejavu.conf.config import *
-from dejavu.utils.data import *
 from dejavu.utils.misc import *
 
 # Gray, Red, Green, Yellow, Blue, Magenta, Cyan, White, Crimson

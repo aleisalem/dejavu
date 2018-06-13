@@ -1,7 +1,5 @@
 #!/usr/bin/python
 
-from dejavu.utils.data import *
-
 import random, string, os, glob, subprocess, time
 from datetime import datetime
 import Levenshtein
@@ -17,10 +15,16 @@ def checkRoot():
         return True
 
 def stringRatio(str1, str2):
-    if len(str1+str2) < 1:
-        print "[*] THERE!!"
+    if str1 is None or str2 is None:
+        return 0.0
+    elif len(str1) < 1 or len(str2) < 1:
+        return 0.0
+    elif not isinstance(str1, str) and not isinstance(str1, unicode):
+        return 0.0
+    elif not isinstance(str2, str) and not isinstance(str2, unicode):
         return 0.0
     else:
+        str1, str2 = unicode(str1), unicode(str2) # Avoid differences in types (e.g., str vs. unicode)
         return float(len(str1+str2) - Levenshtein.distance(str1, str2))/len(str1+str2)
 
 def listsRatio(list1, list2):

@@ -1,14 +1,15 @@
 #!/usr/bin/python
 
-from dejavu.utils.graphics import *
-from dejavu.utils.data import *
-from dejavu.utils.misc import *
-from dejavu.utils.db import *
 from dejavu.conf.config import *
+from dejavu.utils.graphics import *
+from dejavu.utils.misc import *
 import os, random, subprocess, pickle, zipfile, shutil, json
 import numpy
 from androguard.misc import *
 import networkx as nx
+from skimage.measure import compare_ssim
+import imutils
+import cv2
 
 def diffImages(imgA, imgB):
     """
@@ -28,6 +29,16 @@ def diffImages(imgA, imgB):
         # convert the images to grayscale
         grayA = cv2.cvtColor(imageA, cv2.COLOR_BGR2GRAY)
         grayB = cv2.cvtColor(imageB, cv2.COLOR_BGR2GRAY)
+
+        # resize images in case of mismatching dimensions
+        # resize smaller images to bigger ones
+        if grayA.shape > grayB.shape:
+            grayB.resize(grayA.size)
+            grayA.resize(grayA.size)
+
+        elif grayA.shape < grayB.shape:
+            grayA.resize(grayB.size)
+            grayB.resize(grayB.size)
 
         # compute the Structural Similarity Index (SSIM) between the two
         # images, ensuring that the difference image is returned
@@ -230,7 +241,7 @@ def logEvent(msg):
 
     return True 
 
-def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False):
+def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=5000):
     """
     Compares and attempts to match two APK's and returns a similarity measure
     :param sourceAPK: The path to the source APK (the original app you wish to match)
@@ -245,6 +256,10 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
     :type matchWith: int
     :param useSimiDroid: Whether to use SimiDroid to perform the comparison
     :type useSimiDroid: boolean
+    :param fastSearch: Whether to return matchings one maximum number of matches [matchWith] is reached
+    :type fastSearch: boolean
+    :param matchingTimeout: The number of apps to match against prior to returning
+    :type matchingTimeoue: int
     :return: A list of str depicting the top [matchWith] apps similar to [sourceAPK] with more thatn [matchingThreshold] percetange
     """
     try:
@@ -260,12 +275,23 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
  
         prettyPrint("Successfully retrieved %s apps from \"%s\"" % (len(targetApps), targetAPKs))
         matchings = {}
+        counter = 0
         for targetAPK in targetApps:
-
+            counter += 1
+            # Timeout?
+            if counter >= matchingTimeout:
+                prettyPrint("Matching timeout", "error")
+                return matchings
+            prettyPrint("Matching with \"%s\", #%s out of %s" % (targetAPK, counter, len(targetApps)), "debug")
             if useSimiDroid == False:
                 # Use homemade recipe to perform the comparison
+                if not os.path.exists("%s/data.txt" % targetAPK):
+                    prettyPrint("Could not find a \"data.txt\" file for app \"%s\". Skipping" % targetAPK, "warning")
+                    continue
+
+                # Load pre-extracted target app information
                 targetInfo = eval(open("%s/data.txt" % targetAPK).read())
-                targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) else None
+                targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
   
                 # Start the comparison
                 differences = []
@@ -274,8 +300,10 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                     differences.append(stringRatio(sourceInfo["package"], targetInfo["package"]))
                     differences.append(stringRatio(sourceInfo["icon"], targetInfo["icon"]))
                     #differences.append(stringRatio(sourceInfo["signature"], targetInfo["signature"]))
-                    if os.path.exists("./tmp/%s" % sourceInfo["icon"]) and os.path.exists("%s/%s" % (targetApp, targetInfo["icon"])):
-                        differences.append(diffImages("./tmp/%s" % sourceInfo["icon"], "%s/%s" % (targetApp, targetInfo["icon"])))
+                    sourceIcon = "%s/tmp/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
+                    targetIcon = "%s/%s" % (targetAPK, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
+                    if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
+                        differences.append(diffImages(sourceIcon, targetIcon))
      
                 if matchingDepth >= 2:
                     differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
@@ -317,12 +345,21 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 os.chdir(curDir)
 
             similarity = float(sum(differences))/float(len(differences)) if useSimiDroid == False else float(outContent["conclusion"]["simiScore"])
+            prettyPrint("Similarity score: %s" % similarity)
             if similarity >= matchingThreshold:
                 prettyPrint("Got a match between source \"%s\" and app \"%s\", with score %s" % (sourceAPK[sourceAPK.rfind("/")+1:].replace(".apk", ""), targetAPK[targetAPK.rfind("/")+1:].replace(".apk", ""), similarity), "output")
+
                 if useSimiDroid == False:
                     matchings[targetInfo["package"]] = similarity
                 else:
                     matchings[targetAPK] = similarity
+
+                if fastSearch and len(matchings) >= matchWith:
+                    # Return what we've got so far
+                    if len(matchings) >= matchWith:
+                        return sortDictByValue(matchings, True)[:matchWith]
+                    else:
+                        return sortDictByValue(matchings, True)
 
     except Exception as e:
         prettyPrintError(e)

@@ -30,3 +30,6 @@ files/scripts/*
 
 # Ignore database files
 *.db
+
+# Ignore JSON files
+*.json

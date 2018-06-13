@@ -2,11 +2,12 @@
 
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
+from dejavu.utils.data import *
 from dejavu.utils.apkid import *
 from dejavu.learning.feature_extraction import *
 from dejavu.learning.scikit_learners import *
 import pickle
-import argparse, os, glob, random
+import argparse, os, glob, random, sys
 
 def defineArguments():
     parser = argparse.ArgumentParser(prog="nwo_tool.py", description="Implements the hybrid process to detect repackaged malware")
@@ -23,7 +24,7 @@ def main():
     try:
         argumentParser = defineArguments()
         arguments = argumentParser.parse_args()
-        prettyPrint("Alors...")
+        prettyPrint("Allora!")
 
         # 1. Retrieve the apps to be tested and load their feature vectors
         testAPKs = glob.glob("%s/*.apk" % arguments.inputdir)
@@ -32,7 +33,7 @@ def main():
             prettyPrint("Could not find any APKs to classify. Exiting", "error")
             return False
 
-        prettyPrint("Successfully retrieved %s malicious features files and %s benign feature files" % (len(testAPKs)))
+        prettyPrint("Successfully retrieved %s apps" % (len(testAPKs)))
 
         prettyPrint("Loading the classifier under \"%s\"" % arguments.classifier)
         clf = pickle.loads(open(arguments.classifier).read())
@@ -46,12 +47,12 @@ def main():
             originalLabel = 1 if app.find("malware") != -1 else 0
             # See whether we can match this app to any benign app
             useSimiDroid = True if arguments.matchingmethod == "simidroid" else False
-            prettyPrint("Matching ...")
+            prettyPrint("Matching with apps from \"%s\"" % arguments.dbdir)
             matchings = matchAPKs(app, arguments.dbdir, matchingDepth=arguments.matchingdepth, matchingThreshold=arguments.matchingthreshold, useSimiDroid=useSimiDroid)
             if len(matchings) > 0:
-                prettyPrint("The app has been matched with %s apps: %s" % (len(matchings), matchings))
+                prettyPrint("The app has been matched with %s app(s): %s" % (len(matchings), matchings))
                 # Use APKiD to fingerprint the app's compiler
-                results = scan(app, 60, "")
+                results = scan(app, 60, "yes")
                 if len(results) < 1:
                     prettyPrint("Could not fingerprint the app's compiler. Skipping", "warning")
                     continue
@@ -61,7 +62,8 @@ def main():
                     prettyPrint("Could not retrieve compiler from result: %s. Skipping" % str(results), "warning")
                     continue
                 
-                predictedLabel = 1 if compiler.find("dx") != -1 or compiler.find("dexmerge") != -1 else 0
+                matched += 1.0
+                predictedLabel = 0 if compiler.find("dx") != -1 or compiler.find("dexmerge") != -1 else 1
 
             else:
                 # Load feature vector of app
@@ -70,21 +72,23 @@ def main():
                     x_test = loadNumericalFeatures(featuresFile)
                 else:
                     prettyPrint("Could not locate %s features file for app \"%s\". Skipping" % (arguments.featurestype, app), "warning")
+                    continue
                 # Test using misclassified apps
-                predictedLabel = clfAMD.predict(x_test)
+                classified += 1.0
+                predictedLabel = clf.predict(x_test)[0]
 
             # Append results to lists
             y.append(originalLabel)
             predicted.append(predictedLabel)
 
-            prettyPrint("%s app \"%s\" classified as %s" % (labels[originalLabel], app[app.rfind('/')+1:], labels[predictedLabel]))
+            prettyPrint("%s app \"%s\" classified as %s" % (labels[originalLabel], app[app.rfind('/')+1:], labels[predictedLabel]), "info2")
   
         metrics_all = calculateMetrics(y, predicted)
-        prettyPrint("Accuracy: %s" % metrics_all["accuracy"], "out")
-        prettyPrint("Precision: %s" % metrics_all["precision"], "out")
-        prettyPrint("Recall: %s" % metrics_all["recall"], "out")
-        prettyPrint("Specificity: %s" % metrics_all["specificity"], "out")
-        prettyPrint("F1 Score: %s" % metrics_all["f1score"], "out")
+        prettyPrint("Accuracy: %s" % metrics_all["accuracy"], "output")
+        prettyPrint("Precision: %s" % metrics_all["precision"], "output")
+        prettyPrint("Recall: %s" % metrics_all["recall"], "output")
+        prettyPrint("Specificity: %s" % metrics_all["specificity"], "output")
+        prettyPrint("F1 Score: %s" % metrics_all["f1score"], "output")
 
     except Exception as e:
         prettyPrintError("Error occurred: %s" % e)
