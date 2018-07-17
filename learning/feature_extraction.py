@@ -6,6 +6,7 @@ from dejavu.utils.misc import *
 from dejavu.shared.constants import * 
 import sklearn, numpy, json
 import os
+from androguard.misc import *
 
 def extractCountFeatures(allSequences, includeTriggers=True):
     """
@@ -108,86 +109,89 @@ def extractDroidmonFeatures(logPath, mode="classes", includeArguments=False):
 
     return trace, features
 
-def extractStaticFeatures(source):
-    """
-    Extracts general static features from app representations
-    :param source: The source of the app's representation (e.g., file or dict)
-    :type source: str or dict
-    :return: A list of str depicting the description of individual features in the vector 
-    :return: A list of float depicting the numerical features of the app
-    """
+def extractStaticFeatures(apkPath):
+    """Extracts static numerical features from APK using Androguard"""
     try:
-        attributes, features = [], []
-        # 1. Check source type
-        data = json.loads(open(source).read()) if type(source) == str else source
-        if len(data) < 1:
-            prettyPrint("Unable to retrieve any content from file", "error")
-            return [], []
-        # 2. Extract features
-        # 2.a. APK size
-        attributes.append("size") # APK Size
-        features.append(data["size"])
-        # 2.b. Permissions
-        attributes.append("total_permissions") # No. total permissions
-        features.append(len(data["permissions"]))
-        attributes.append("android_permissions") # No. Android permissions
-        androidPerms = [p for p in data["permissions"] if p in androidPermissions]
-        features.append(len(androidPerms))
-        attributes.append("ratio_android_permissions") # Android permissions : total permissions
-        if len(data["permissions"]) == 0:
-            features.append(0.0)
+        features = [[], [], [], []] # Tuples are immutable
+        if os.path.exists(apkPath.replace(".apk",".static")):
+            prettyPrint("Found a pre-computed static features file")
+            bFeatures, pFeatures, aFeatures, allFeatures = [], [], [], []
+            try:
+                possibleExtensions = [".basic", ".perm", ".api", ".static"]
+                for ext in possibleExtensions:
+                    if os.path.exists(apkPath.replace(".apk", ext)):
+                        content = open(apkPath.replace(".apk", ext)).read()
+                        if len(content) > 0:
+                            features[possibleExtensions.index(ext)] = [float(f) for f in content[1:-1].split(',') if len(f) > 0]
+
+                return tuple(features)
+
+            except Exception as e:
+                prettyPrintError(e)
+                prettyPrint("Could not extract features from \".static\" file. Continuing as usual", "warning")
+        prettyPrint("Starting analysis on \"%s\"" % apkPath, "debug")
+        # 1. Analyze APK and retrieve its components
+        apk, dex, vm = AnalyzeAPK(apkPath)
+        dex = dex[0]
+        #analysisSession.add(apkPath, open(apkPath).read())
+        #if type(analysisSession.analyzed_apk.values()) == list:
+        #    apk = analysisSession.analyzed_apk.values()[0][0]
+        #else:
+        #    apk = analysisSession.analyzed_apk.values()[0]
+        #print analysisSession.analyzed_dex.values()[0]
+        #dex = analysisSession.analyzed_dex.values()[0][0]
+        #vm = analysisSession.analyzed_dex.values()[0][1]
+        # 2. Add features to the features vector
+        basicFeatures, permissionFeatures, apiCallFeatures, allFeatures = [], [], [], []
+        # 2.a. The APK-related features
+        prettyPrint("Extracting basic features", "debug")
+        minSDKVersion = 0.0 if not apk.get_min_sdk_version() else float(apk.get_min_sdk_version())
+        maxSDKVersion = 0.0 if not apk.get_max_sdk_version() else float(apk.get_max_sdk_version())
+        basicFeatures.append(minSDKVersion)
+        basicFeatures.append(maxSDKVersion)
+        basicFeatures.append(float(len(apk.get_activities()))) # No. of activities
+        basicFeatures.append(float(len(apk.get_services()))) # No. of services
+        basicFeatures.append(float(len(apk.get_receivers()))) # No. of broadcast receivers
+        basicFeatures.append(float(len(apk.get_providers()))) # No. of providers
+        # 2.b. Harvest permission-related features
+        prettyPrint("Extracting permissions-related features", "debug")
+        aospPermissions = float(len(apk.get_permissions())) # Android permissions requested by the app
+        declaredPermissions = float(len(apk.get_declared_permissions())) # Custom permissions declared by the app
+        dangerousPermissions = float(len([p for p in apk.get_requested_aosp_permissions_details().values() if p["protectionLevel"] == "dangerous"]))
+        totalPermissions = float(len(apk.get_permissions()))
+        permissionFeatures.append(totalPermissions) # No. of permissions
+        if totalPermissions > 0:
+            permissionFeatures.append(aospPermissions/totalPermissions) # AOSP permissions : Total permissions
+            permissionFeatures.append(declaredPermissions/totalPermissions) # Third-party permissions : Total permissions
+            permissionFeatures.append(dangerousPermissions/totalPermissions) # Dangerous permissions : Total permissions
         else:
-            features.append(float(len(androidPerms))/float(len(data["permissions"])))
-        attributes.append("custom_permissions") # No. of custom permissions
-        features.append(len(data["permissions"])-len(androidPerms))
-        attributes.append("ratio_custom_permissions")
-        if len(data["permissions"]) == 0:
-            features.append(0.0)
-        else:
-            features.append(float(len(data["permissions"])-len(androidPerms))/float(len(data["permissions"])))
-        for p in androidPermissions:
-            permission = p.replace("android.permission.", "")
-            attributes.append("has_%s" % permission)
-            has_permission = 1 if p in data["permissions"] else 0
-            features.append(has_permission)
-        # 3. Counts of categories of API calls in an app data["global_sensitive_categories"]
-        attributes.append("total_sensitive_categories") # No. of categories ("network", "crypto", "sms", etc.)
-        features.append(sum(data["global_sensitive_categories"].values()))
-        for c in staticCategories:
-            attributes.append("count_%s" % c)
-            count = 0 if not c in data["global_sensitive_categories"] else data["global_sensitive_categories"][c]
-            features.append(count)
-        # 4. Breakdown of categories above as aPI calls data["global_sensitive_apis"]
-        for p in staticPackages:
-            attributes.append(p)
-            count = 0
-            for entry in data["global_sensitive_apis"]:
-                if entry.lower().find(p.lower()) != -1:
-                    count += 1
-            features.append(count)
-        # 5. Number of suspicious methods data["num_suspicious_methods"]
-        attributes.append("suspicious_methods")
-        features.append(data["num_suspicious_methods"])
+            permissionFeatures.append(0.0)
+            permissionFeatures.append(0.0)
+            permissionFeatures.append(0.0)
+        # 2.c. The DEX-related features (API calls)
+        prettyPrint("Extracting API calls from dex code", "debug")
+        apiCallFeatures.append(float(len(dex.get_classes()))) # Total number of classes
+        apiCallFeatures.append(float(len(dex.get_strings()))) # Total number of strings
+        apiCategories = sensitiveAPICalls.keys()
+        apiCategoryCount = [0.0] * len(apiCategories)
+        for c in dex.classes.get_names():
+            currentClass = dex.get_class(c)
+            if not currentClass:
+                continue
+            code = currentClass.get_source()
+            if len(code) < 1:
+                continue
+            for category in apiCategories:
+                if code.find(category) != -1:
+                    for call in sensitiveAPICalls[category]:
+                        apiCategoryCount[apiCategories.index(category)] += float(len(re.findall(call, code)))
+
+        apiCallFeatures += apiCategoryCount
 
     except Exception as e:
         prettyPrintError(e)
-        return [], []
+        return [], [], [], []
+    
+    allFeatures = basicFeatures + permissionFeatures + apiCallFeatures
 
-    return attributes, features
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return basicFeatures, permissionFeatures, apiCallFeatures, allFeatures
