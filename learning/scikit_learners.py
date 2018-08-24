@@ -11,6 +11,8 @@ from sklearn.model_selection import cross_val_predict, KFold
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import *
+import sklearn.cluster
+from Levenshtein import distance
 
 import os
 
@@ -42,6 +44,36 @@ def calculateMetrics(truth, predicted):
         return {}
 
     return metrics
+
+def clusterStrings(words, affinity="precomputed", damping=0.5):
+    """
+    Clusters a list of strings using Affinity propagation
+    :param words: The list of strings you wish to cluster
+    :type words: list of str
+    :param affinity: The affinity method to use. Supported: "precomputed" and "euclidean"
+    :type affinity: str
+    :param damping: Damping factor (between 0.5 and 1) is the extent to which the current value is maintained relative to incoming values (weighted 1 - damping).
+    :type damping: float
+    :return: A dict of clusters with key being the cluster center
+    """
+    try:
+        clusters = {}
+        words = numpy.asarray(words)
+        lev_similarity = -1*numpy.array([[distance(w1,w2) for w1 in words] for w2 in words])
+
+        affprop = sklearn.cluster.AffinityPropagation(affinity="precomputed", damping=0.5)
+        affprop.fit(lev_similarity)
+        for cluster_id in numpy.unique(affprop.labels_):
+            center = words[affprop.cluster_centers_indices_[cluster_id]]
+            cluster = numpy.unique(words[numpy.nonzero(affprop.labels_==cluster_id)])
+            clusters[center] = cluster.tolist()
+
+    except Exception as e:
+        prettyPrintError(e)
+        return {}
+
+    return dict(clusters)
+
 
 def predictAndTestEnsemble(X, y, Xtest=[], ytest=[], classifiers=[], selectKBest=0):
     """

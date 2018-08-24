@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 from dejavu.utils.graphics import *
+from dejavu.utils.data import *
 from dejavu.learning.scikit_learners import *
 import pickle
 import argparse, os, glob, random

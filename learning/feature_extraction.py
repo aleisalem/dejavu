@@ -3,6 +3,7 @@
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
+from dejavu.utils.apkid import *
 from dejavu.shared.constants import * 
 import sklearn, numpy, json
 import os
@@ -109,7 +110,7 @@ def extractDroidmonFeatures(logPath, mode="classes", includeArguments=False):
 
     return trace, features
 
-def extractStaticFeatures(apkPath):
+def extractStaticFeatures(apkPath, preAPK=None, preDEX=None, preVM=None):
     """Extracts static numerical features from APK using Androguard"""
     try:
         features = [[], [], [], []] # Tuples are immutable
@@ -131,16 +132,11 @@ def extractStaticFeatures(apkPath):
                 prettyPrint("Could not extract features from \".static\" file. Continuing as usual", "warning")
         prettyPrint("Starting analysis on \"%s\"" % apkPath, "debug")
         # 1. Analyze APK and retrieve its components
-        apk, dex, vm = AnalyzeAPK(apkPath)
-        dex = dex[0]
-        #analysisSession.add(apkPath, open(apkPath).read())
-        #if type(analysisSession.analyzed_apk.values()) == list:
-        #    apk = analysisSession.analyzed_apk.values()[0][0]
-        #else:
-        #    apk = analysisSession.analyzed_apk.values()[0]
-        #print analysisSession.analyzed_dex.values()[0]
-        #dex = analysisSession.analyzed_dex.values()[0][0]
-        #vm = analysisSession.analyzed_dex.values()[0][1]
+        if preAPK and preDEX and preVM:
+            apk, dex, vm = preAPK, preDEX, preVM   
+        else:
+            apk, dex, vm = AnalyzeAPK(apkPath)
+            dex = dex[0]
         # 2. Add features to the features vector
         basicFeatures, permissionFeatures, apiCallFeatures, allFeatures = [], [], [], []
         # 2.a. The APK-related features
@@ -187,11 +183,19 @@ def extractStaticFeatures(apkPath):
                         apiCategoryCount[apiCategories.index(category)] += float(len(re.findall(call, code)))
 
         apiCallFeatures += apiCategoryCount
+        # All features = combination of all features :)
+        allFeatures = basicFeatures + permissionFeatures + apiCallFeatures
+        # Add the compiler id as well
+        output = scan(apkPath, 60, "yes")
+        try:
+            compiler = output["files"][0]["results"]["compiler"][0]
+            allFeatures.append(allCompilers.index(compiler))
+        except Exception as e:
+            allFeatures.append(allCompilers.index("n/a"))
+
 
     except Exception as e:
         prettyPrintError(e)
         return [], [], [], []
-    
-    allFeatures = basicFeatures + permissionFeatures + apiCallFeatures
 
     return basicFeatures, permissionFeatures, apiCallFeatures, allFeatures

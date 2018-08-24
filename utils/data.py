@@ -3,7 +3,7 @@
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
-import os, random, subprocess, pickle, zipfile, shutil, json
+import os, random, subprocess, pickle, zipfile, shutil, json, exceptions
 import numpy
 from androguard.misc import *
 import networkx as nx
@@ -11,13 +11,49 @@ from skimage.measure import compare_ssim
 import imutils
 import cv2
 
+def diffCertificateIssuers(issuerA, issuerB):
+    """
+    Compares the issuers of two certificates
+    :param issuerA: The issuer details of the first certificate
+    :type issuerA: str
+    :param issuerB: The issuer details of the second certificate
+    :type issuerB: str
+    :return: float depicting the difference between the two issuers
+    """
+    try:
+        # Parse two strings to extract data
+        dataA, dataB = {}, {}
+        for t in issuerA.split(", "):
+            if len(t) > 0:
+                key, value = t.split(": ")
+                dataA[key] = value
+
+        for t in issuerB.split(", "):
+            if len(t) > 0:
+                key, value = t.split(": ")
+                dataB[key] = value
+
+        # Gather common keys
+        commonKeys = list(set.intersection(set(dataA.keys()), set(dataB.keys())))
+        diffs = []
+        for key in commonKeys:
+            diffs.append(stringRatio(dataA[key], dataB[key]))
+            
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0
+    
+    diff = 0.0 if len(diffs) < 1 else sum(diffs)/float(len(diffs))
+
+    return diff
+
 def diffImages(imgA, imgB):
     """
     Compares the structure similarity of two images and retrurns the SSIM difference
-    :param imgA:
-    :type imgA:
-    :param imgB:
-    :type imgB:
+    :param imgA: The path to the first image
+    :type imgA: str
+    :param imgB: The path to the second image
+    :type imgB: str
     :return: float depicting the SSIM difference between the two images
     """
     try:
@@ -78,14 +114,16 @@ def diffTraces(traceX, traceY, ignoreArguments=True):
 
     return diffs
 
-def extractAPKInfo(targetAPK, infoLevel=1):
+def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
     """
     Statically analyzes APK and extracts information from it
     :param targetAPK: The path to the APK to analyze
     :type targetAPK: str
     :param infoLevel: The depth of information to retrieve (e.g., names, components, classes, etc.)
     :type infoLevel: int
-    :return: A dict containing necessary information
+    :param saveInfo: Whether to save the extracted information to file
+    :type saveInfo: boolean
+    :return: A tuple of the three objects retrurned by androguard and a dict containing necessary information
     """
     try:
         apkData = {}
@@ -95,13 +133,13 @@ def extractAPKInfo(targetAPK, infoLevel=1):
         apkData["name"] = apk.get_app_name()
         apkData["package"] = apk.get_package()
         apkData["icon"] = apk.get_app_icon()
-        apkData["signature"] = apk.get_signature()
+        #apkData["signature"] = apk.get_signature()
+        #apkData["certificate"] = apk.get_certificate(apk.get_signature_name())
+        apkData["issuer"] = apk.get_certificate(apk.get_signature_name()).issuer.human_friendly
         with zipfile.ZipFile(targetAPK, "r") as zip_ref:
             try:
-                zip_ref.extractall("%s/tmp/" % targetAPK[:targetAPK.rfind('/')])
-                #shutil.copy("./tmp/%s" % apkData["icon"], ".")
-                #if os.path.exists("./tmp"):
-                #    shutil.rmtree("./tmp")
+                destination = "%s/tmp_%s/" % (targetAPK[:targetAPK.rfind('/')], apkData["package"])
+                zip_ref.extractall(destination)
                 zip_ref.close()
             except zipfile.BadZipfile as e:
                 prettyPrint("Could not retrieve the app's icon", "warning") 
@@ -122,13 +160,27 @@ def extractAPKInfo(targetAPK, infoLevel=1):
                 for m in dex.get_methods_class(c):
                     apkData["methods"].append("%s->%s" % (c, m.name))
         if infoLevel >= 4:
-            apkData["callgraph"] = vm.get_call_graph()
+            callgraph = vm.get_call_graph()
+            apkData["callgraph"] = "%s/call_graph.gpickle" % destination
 
+        if saveInfo:
+            prettyPrint("Saving extracted info to \"%s\"" % destination, "debug") 
+            if not os.path.exists(destination):
+                prettyPrint("Could not find the temporary directory \"%s\". Saving aborted"  % destination, "warning")
+                return apk, dex, vm, apkData
+            else:
+                open("%s/data.txt" % destination, "w").write(str(apkData))
+                if infoLevel >= 4:
+                    nx.write_gpickle(callgraph, "%s/call_graph.gpickle" % destination)
+
+    except exceptions.RuntimeError as re:
+        prettyPrintError(re)
+        
     except Exception as e:
         prettyPrintError(e)
-        return {}
+        return None, None, None, {}
 
-    return apkData
+    return apk, dex, vm, apkData
 
 def hex_to_rgb(value):
     value = value.lstrip('#')
@@ -299,6 +351,7 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 # Load pre-extracted target app information
                 targetInfo = eval(open("%s/data.txt" % targetAPK).read())
                 targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
+                targetLabel = eval(open("%s/label" % targetAPK).read())
   
                 # Start the comparison
                 differences = []
@@ -307,7 +360,8 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                     differences.append(stringRatio(sourceInfo["package"], targetInfo["package"]))
                     differences.append(stringRatio(sourceInfo["icon"], targetInfo["icon"]))
                     #differences.append(stringRatio(sourceInfo["signature"], targetInfo["signature"]))
-                    sourceIcon = "%s/tmp/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
+                    #differences.append(stringRatio(sourceInfo["certificate"], targetInfo["certificate"]))
+                    sourceIcon = "%s/tmp_%s/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["package"], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
                     targetIcon = "%s/%s" % (targetAPK, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
                     if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
                         differences.append(diffImages(sourceIcon, targetIcon))
@@ -331,11 +385,6 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                         differences.append(1.0)
                     else:
                         differences.append(0.0)
-
-                # Clean up temporary directory
-                if os.path.exists("./tmp"):
-                    shutil.rmtree("./tmp")
-
             else:
                 # Use SimiDroid to perform comparison
                 curDir = os.path.abspath(".")
@@ -357,9 +406,9 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 prettyPrint("Got a match between source \"%s\" and app \"%s\", with score %s" % (sourceAPK[sourceAPK.rfind("/")+1:].replace(".apk", ""), targetAPK[targetAPK.rfind("/")+1:].replace(".apk", ""), similarity), "output")
 
                 if useSimiDroid == False:
-                    matchings[targetInfo["package"]] = similarity
+                    matchings[targetInfo["package"]] = (similarity, targetLabel[0])
                 else:
-                    matchings[targetAPK] = similarity
+                    matchings[targetAPK] = (similarity, targetLabel[0])
 
                 if fastSearch and len(matchings) >= matchWith:
                     # Return what we've got so far
@@ -376,4 +425,92 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
         return sortDictByValue(matchings, True)[:matchWith]
     else:
         return sortDictByValue(matchings, True)
+
+
+def matchTwoAPKs(sourceDir, targetDir, matchingDepth=1, useSimiDroid=False):
+    """
+    Compares and attempts to match two APK's and returns a similarity measure
+    :param sourceDir: The path to the directory containing information pre-extracted from the source APK
+    :type sourceDir: str
+    :param targetDir: The path to the directory containing information pre-extracted from the target APK
+    :type targetDir: str
+    :param matchingDepth: The depth and rigorosity of the matching (between 1 and 4)
+    :type matchingDepth: int
+    :param useSimiDroid: Whether to use SimiDroid to perform the comparison
+    :type useSimiDroid: boolean
+    :return: A float depicting the degree of similarity between two apps
+    """
+    try:
+        similarity = 0.0
+        # Retrieve information from the source APK
+        if useSimiDroid == False:
+            if not os.path.exists("%s/data.txt" % sourceDir) or not os.path.exists("%s/data.txt" % targetDir):
+                prettyPrint("Could not locate either the source or the target directories. Returning 0.0", "warning")
+                return 0.0
+
+            sourceInfo = eval(open("%s/data.txt" % sourceDir).read())
+            sourceInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % sourceDir) if os.path.exists("%s/call_graph.gpickle" % sourceDir) and matchingDepth >= 4 else None
+            targetInfo = eval(open("%s/data.txt" % targetDir).read())
+            targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetDir) if os.path.exists("%s/call_graph.gpickle" % targetDir) and matchingDepth >= 4 else None
+            # Another sanity check
+            if len(sourceInfo) < 1 or len(targetInfo) < 1:
+                prettyPrint("Could not retrieve info about either the source or the target apps. Returning 0.0", "warning")
+                return 0.0
+
+            # Start the comparison
+            differences = []
+            if matchingDepth >= 1:
+                differences.append(stringRatio(sourceInfo["name"], targetInfo["name"]))
+                differences.append(stringRatio(sourceInfo["package"], targetInfo["package"]))
+                differences.append(stringRatio(sourceInfo["icon"], targetInfo["icon"]))
+                #differences.append(stringRatio(sourceInfo["signature"], targetInfo["signature"]))
+                sourceIcon = "%s/%s" % (sourceDir, sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
+                targetIcon = "%s/%s" % (targetDir, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
+                if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
+                    differences.append(diffImages(sourceIcon, targetIcon))
+
+            if matchingDepth >= 2:
+                differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
+                differences.append(listsRatio(sourceInfo["permissions"], targetInfo["permissions"]))
+                differences.append(listsRatio(sourceInfo["providers"], targetInfo["providers"]))
+                differences.append(listsRatio(sourceInfo["receivers"], targetInfo["receivers"]))
+                differences.append(listsRatio(sourceInfo["services"], targetInfo["services"]))
+                differences.append(listsRatio(sourceInfo["files"], targetInfo["files"]))
+
+            if matchingDepth >= 3:
+                differences.append(listsRatio(sourceInfo["libraries"], targetInfo["libraries"]))
+                differences.append(listsRatio(sourceInfo["classes"], targetInfo["classes"]))
+                differences.append(listsRatio(sourceInfo["methods"], targetInfo["methods"]))
+
+            if matchingDepth >= 4:
+                isomorphic = nx.algorithms.is_isomorphic(sourceInfo["callgraph"], targetInfo["callgraph"])
+                if isomorphic:
+                    differences.append(1.0)
+                else:
+                    differences.append(0.0)
+
+        else:
+            # Use SimiDroid to perform comparison
+            curDir = os.path.abspath(".")
+            os.chdir(SIMIDROID_DIR)
+            cmd = "java -jar SimiDroid.jar %s %s" % (sourceAPK, targetAPK)
+            outFile = "%s-%s.json" % (sourceAPK[sourceAPK.rfind('/')+1:].replace(".apk", ""), targetAPK[targetAPK.rfind("/")+1:].replace(".apk", ""))
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+            p.communicate()
+            if not os.path.exists(outFile):
+                prettyPrint("Could not find SimiDroid output file. Skipping", "warning")
+                return 0.0
+ 
+            outContent = json.loads(open(outFile).read())
+            os.chdir(curDir)
+            
+        # Calculate similarity
+        similarity = float(sum(differences))/float(len(differences)) if useSimiDroid == False else float(outContent["conclusion"]["simiScore"])
+        prettyPrint("Similarity score: %s" % similarity)
+
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0
+
+    return similarity
 
