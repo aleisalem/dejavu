@@ -8,7 +8,7 @@ from dejavu.learning.feature_extraction import *
 from dejavu.learning.scikit_learners import *
 import pickle
 from Levenshtein import distance
-import argparse, os, glob, random, sys, operator, logging, shutil, time
+import argparse, os, glob, random, sys, operator, logging, shutil, time, signal
 from exceptions import KeyError
 
 def defineArguments():
@@ -29,6 +29,7 @@ def main():
         argumentParser = defineArguments()
         arguments = argumentParser.parse_args()
         prettyPrint("Los geht's!!")
+        
 
         logging.disable(50)
         # Retrieve the apps to be tested
@@ -55,12 +56,19 @@ def main():
         # Key: app path
         # Value: (package_name, compiler, analysis time, original_label, predicted_label, prediction_confidence, prediction_method, matched_path)
         performance = {}
-
         # Iterate over test APK's and classify them
         y, predicted = [], []
         matched, classified = 0.0, 0.0
         labels = ["Goodware", "Malware"]
         for app in testAPKs:
+            # Handle Ctrl+C events without losing data
+            def signal_handler(sig, frame):
+                if len(performance) > 0:
+                    prettyPrint("Received Ctrl+C signal. Saving performance file", "error")
+                    open("Dejavu_results_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.matchingthreshold), "w").write(str(performance))
+                sys.exit(0)
+            signal.signal(signal.SIGINT, signal_handler)
+            # End of Handle Ctrl+C events without losing data
             start_time = time.time() # Start timing classification here
             prettyPrint("Processing app \"%s\"" % app)
             originalLabel = 1 if app.find("malware") != -1 else 0
@@ -106,11 +114,11 @@ def main():
                             if compiler.lower().find("dx") != -1:
                                 # Just make sure it is not developed by the same developer
                                 prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
-                                predictedLabel = 1 if diffCertificateIssuers(app_info["issuer"], matched_info["issuer"]) < arguments.matchingthreshold else 0
+                                predictedLabel = 1 if simCertificateIssuers(app_info["issuer"], matched_info["issuer"]) < arguments.matchingthreshold else 0
                             else:
                                 # Same as above in terms of issuer
                                 prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
-                                issuer_match = diffCertificateIssuers(app_info["issuer"], matched_info["issuer"])
+                                issuer_match = simCertificateIssuers(app_info["issuer"], matched_info["issuer"])
                                 matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
                                 # Deem benign ONLY if they have the same issuer and matching compilers
                                 predictedLabel = -1 if issuer_match == 1.0 and matched_compiler == compiler else 1
@@ -180,6 +188,7 @@ def main():
         # Save gathered performance metrics
         open("Dejavu_results_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.matchingthreshold), "w").write(str(performance))
         # Cleaning up?
+         
         if arguments.cleanup == "yes":
             prettyPrint("Cleaning up")
             for directory in glob.glob("%s/tmp_*" % arguments.inputdir):

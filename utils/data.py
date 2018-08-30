@@ -3,7 +3,7 @@
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
-import os, random, subprocess, pickle, zipfile, shutil, json, exceptions
+import os, random, subprocess, pickle, zipfile, shutil, json, exceptions, time
 import numpy
 from androguard.misc import *
 import networkx as nx
@@ -11,31 +11,33 @@ from skimage.measure import compare_ssim
 import imutils
 import cv2
 
-def diffCertificateIssuers(issuerA, issuerB):
+def simCertificateIssuers(issuerA, issuerB):
     """
     Compares the issuers of two certificates
     :param issuerA: The issuer details of the first certificate
     :type issuerA: str
     :param issuerB: The issuer details of the second certificate
     :type issuerB: str
-    :return: float depicting the difference between the two issuers
+    :return: float depicting the similarity between the two issuers
     """
     try:
         # Parse two strings to extract data
         dataA, dataB = {}, {}
-        for t in issuerA.split(", "):
+        delimiterA = ';' if issuerA.find('; ') != -1 else ','
+        delimiterB = ';' if issuerB.find('; ') != -1 else ','
+        for t in issuerA.split("%s " % delimiterA):
             if len(t) > 0:
                 key, value = t.split(": ")
                 dataA[key] = value
 
-        for t in issuerB.split(", "):
+        for t in issuerB.split("%s " % delimiterB):
             if len(t) > 0:
                 key, value = t.split(": ")
                 dataB[key] = value
 
         # Gather common keys
         commonKeys = list(set.intersection(set(dataA.keys()), set(dataB.keys())))
-        diffs = []
+        sims = []
         for key in commonKeys:
             diffs.append(stringRatio(dataA[key], dataB[key]))
             
@@ -43,18 +45,18 @@ def diffCertificateIssuers(issuerA, issuerB):
         prettyPrintError(e)
         return 0.0
     
-    diff = 0.0 if len(diffs) < 1 else sum(diffs)/float(len(diffs))
+    sim = 0.0 if len(diffs) < 1 else sum(diffs)/float(len(diffs))
 
-    return diff
+    return sim
 
-def diffImages(imgA, imgB):
+def simImages(imgA, imgB):
     """
-    Compares the structure similarity of two images and retrurns the SSIM difference
+    Compares the structure similarity of two images and retrurns the SSIM similarity
     :param imgA: The path to the first image
     :type imgA: str
     :param imgB: The path to the second image
     :type imgB: str
-    :return: float depicting the SSIM difference between the two images
+    :return: float depicting the SSIM similarity between the two images
     """
     try:
         # load the two input images
@@ -78,8 +80,8 @@ def diffImages(imgA, imgB):
 
         # compute the Structural Similarity Index (SSIM) between the two
         # images, ensuring that the difference image is returned
-        (score, diff) = compare_ssim(grayA, grayB, full=True)
-        diff = (diff * 255).astype("uint8")
+        (score, sim) = compare_ssim(grayA, grayB, full=True)
+        sim = (sim * 255).astype("uint8")
         
         #print("SSIM: {}".format(score))
     except Exception as e:
@@ -300,7 +302,7 @@ def logEvent(msg):
 
     return True 
 
-def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=5000):
+def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=300):
     """
     Compares and attempts to match two APK's and returns a similarity measure
     :param sourceAPK: The path to the source APK (the original app you wish to match)
@@ -317,7 +319,7 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
     :type useSimiDroid: boolean
     :param fastSearch: Whether to return matchings one maximum number of matches [matchWith] is reached
     :type fastSearch: boolean
-    :param matchingTimeout: The number of apps to match against prior to returning
+    :param matchingTimeout: The time (in seconds) to allow the matching process to continue
     :type matchingTimeoue: int
     :return: A list of str depicting the top [matchWith] apps similar to [sourceAPK] with more thatn [matchingThreshold] percetange
     """
@@ -335,6 +337,7 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
         prettyPrint("Successfully retrieved %s apps from \"%s\"" % (len(targetApps), targetAPKs))
         matchings = {}
         counter = 0
+        startTime = time.time()
         for targetAPK in targetApps:
             counter += 1
             # Timeout?
@@ -410,7 +413,8 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 else:
                     matchings[targetAPK] = (similarity, targetLabel[0])
 
-                if fastSearch and len(matchings) >= matchWith:
+                currentTime = time.time()
+                if (fastSearch and len(matchings) >= matchWith) or (currentTime - startTime >= matchingTimeout):
                     # Return what we've got so far
                     if len(matchings) >= matchWith:
                         return sortDictByValue(matchings, True)[:matchWith]
