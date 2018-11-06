@@ -118,10 +118,10 @@ def main():
                             else:
                                 # Same as above in terms of issuer
                                 prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
-                                issuer_match = simCertificateIssuers(app_info["issuer"], matched_info["issuer"])
+				issuer_match = simCertificateIssuers(app_info["issuer"], matched_info["issuer"])
                                 matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
                                 # Deem benign ONLY if they have the same issuer and matching compilers
-                                predictedLabel = -1 if issuer_match == 1.0 and matched_compiler == compiler else 1
+                                predictedLabel = -1 if issuer_match == 1.0 else 1#and matched_compiler == compiler else 1
                             
                             matched_with = target_key 
                             prediction_method = "quick_matching"
