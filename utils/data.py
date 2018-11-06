@@ -39,13 +39,13 @@ def simCertificateIssuers(issuerA, issuerB):
         commonKeys = list(set.intersection(set(dataA.keys()), set(dataB.keys())))
         sims = []
         for key in commonKeys:
-            diffs.append(stringRatio(dataA[key], dataB[key]))
+            sims.append(stringRatio(dataA[key], dataB[key]))
             
     except Exception as e:
         prettyPrintError(e)
         return 0.0
     
-    sim = 0.0 if len(diffs) < 1 else sum(diffs)/float(len(diffs))
+    sim = 0.0 if len(sims) < 1 else sum(sims)/float(len(sims))
 
     return sim
 
@@ -115,6 +115,49 @@ def diffTraces(traceX, traceY, ignoreArguments=True):
         return -1
 
     return diffs
+
+def diffAppCode(app1, app2):
+    """
+    Diffs (app1-app2) the source code of two Android apps
+    :param app1: The path to the app to which new code is presumed to be added (e.g., repackaged malware)
+    :type app1: str
+    :param app2: The path to the app used as reference point
+    :type app2: str
+    :return: A dict including different classes and the different code in them
+    """
+    try:
+        prettyPrint("Analyzing apps")
+        apk1, dex1, vm1 = AnalyzeAPK(app1)
+        apk2, dex2, vm2 = AnalyzeAPK(app2)
+        dex1, dex2 = dex1[0], dex2[0]
+        # Start diffing
+        diff = {}
+        # 1.1. Retrieve newly-added classes
+        new_classes = list(set(dex1.get_classes_names()).difference(dex2.get_classes_names()))
+        prettyPrint("Adding %s newly-added classes to difference" % len(new_classes)) 
+        # 1.2. Add code to diff dictionary
+        for new_class in new_classes:
+            c = dex1.get_class(new_class)
+            diff[new_class] = c.get_source()
+        # Diff existing classes
+        old_classes = list(set(dex1.get_classes_names()).intersection(set(dex2.get_classes_names())))
+        prettyPrint("Checking %s common classes" % len(old_classes))
+        for old_class in old_classes:
+            source1, source2 = dex1.get_class(old_class).get_source(), dex2.get_class(old_class).get_source()
+            if hashlib.sha1(source1).hexdigest() != hashlib.sha1(source2).hexdigest():
+                prettyPrint("Class \"%s\" is different. Retrieving differences" % old_class, "debug")
+                new_code = str(set(source1.split("\n")).difference(set(source2.split("\n"))))
+                diff[old_class] = new_code
+    
+        # Add the packaged names 
+        diff["piggybacked"], diff["original"] = apk1.get_package(), apk2.get_package()
+
+    except Exception as e:
+        prettyPrintError(e)
+        return {}
+
+    return diff
+
 
 def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
     """
