@@ -11,13 +11,13 @@ from skimage.measure import compare_ssim
 import imutils
 import cv2
 
-def simCertificateIssuers(issuerA, issuerB):
+def simCertificateOwners(ownerA, ownerB):
     """
     Compares the issuers of two certificates
-    :param issuerA: The issuer details of the first certificate
-    :type issuerA: str
-    :param issuerB: The issuer details of the second certificate
-    :type issuerB: str
+    :param ownerA: The issuer details of the first certificate
+    :type ownerA: str
+    :param ownerB: The issuer details of the second certificate
+    :type ownerB: str
     :return: float depicting the similarity between the two issuers
     """
     try:

@@ -92,36 +92,45 @@ def main():
             matchings.sort(key=operator.itemgetter(1))
             for m in matchings:
                 for name in clusters[m[0]]:
-                    #if distance(app_info["package"], name) == 0:
+                    # Compute the distance between the current app's package name and the current cluster's center
                     score = stringRatio(app_info["package"], name)
                     if score >= arguments.matchingthreshold:
+                        # Distance is greater than or equal matching threshold (d_match)
                         target_key = lookup[name]
                         prettyPrint("Match with \"%s\" of %s. Performing level 1 matching." % (target_key, score), "output")
-                        #print "[*] %s/tmp_%s/" % (arguments.inputdir, app_info["package"])
                         similarity = matchTwoAPKs("%s/tmp_%s/" % (arguments.inputdir, app_info["package"]), "%s/%s_data/" % (arguments.infodir, target_key), 1)
                         if similarity >= arguments.matchingthreshold:
                             # Retrieve more info about the match
                             if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, target_key)):
                                 matched_info = eval(open("%s/%s_data/data.txt" % (arguments.infodir, target_key)).read())
                             # If still match, extract APKID info
-                            prettyPrint("Fingerprinting %s's compiler using APKiD" % app)
+                            prettyPrint("Fingerprinting \"%s\"'s compiler using APKiD" % app)
                             output = scan(app, 60, "yes")
                             try:
                                 compiler = output["files"][0]["results"]["compiler"][0]
                             except KeyError as ke:
                                 compiler = "n/a"
                             prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
-                            if compiler.lower().find("dx") != -1:
+                            matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
+                            if compiler.lower().find("dx") != -1 or compiler.lower().find("dexmerge") != -1:
                                 # Just make sure it is not developed by the same developer
                                 prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
-                                predictedLabel = 1 if simCertificateIssuers(app_info["issuer"], matched_info["issuer"]) < arguments.matchingthreshold else 0
-                            else:
-                                # Same as above in terms of issuer
-                                prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
-				issuer_match = simCertificateIssuers(app_info["issuer"], matched_info["issuer"])
-                                matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
-                                # Deem benign ONLY if they have the same issuer and matching compilers
-                                predictedLabel = -1 if issuer_match == 1.0 else 1#and matched_compiler == compiler else 1
+                                if matched_compiler == compiler:
+                                    # Exact same compiler. Check whether new code has been added
+                                    # Figure out where the matched app resides
+                                    if os.path.exists("../data/app_apk/GPlay/%s.apk" % target_key):
+                                        matched_app = "../data/app_apk/GPlay/%s.apk" % target_key
+                                    elif os.path.exists("../data/app_apk/Original/%s.apk" % target_key):
+                                        matched_app = "../data/app_apk/Original/%s.apk" % target_key
+                                    else:
+                                        matched_app = None
+                                    # Do the comparison
+                                    if matched_app:
+                                        prettyPrint("Checking code added by \"%s\" to \"%s\"" % (app, matched_app), "debug")
+                                        codeAdded = diffAppCode(app, matched_app)
+                                        if len(codeAdded) == 0:
+                                            # That means that no code has been added to the matched app
+                                            predictedLabel = 0 
                             
                             matched_with = target_key 
                             prediction_method = "quick_matching"
