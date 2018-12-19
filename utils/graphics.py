@@ -12,7 +12,7 @@ colorIndex = [ "30", "31", "32", "33", "34", "35", "36", "37", "38" ]
 ####################
 # Defining Methods #
 #################### 
-def prettyPrint(msg, mode="info"):
+def prettyPrint(msg, mode="info", includeTimestamp=True):
     """ Pretty prints a colored message. "info": Green, "error": Red, "warning": Yellow, "info2": Blue, "output": Magenta, "debug": White """
     if mode == "info":
         color = "32" # Green
@@ -27,8 +27,12 @@ def prettyPrint(msg, mode="info"):
     elif mode == "debug":
         color = "37" # White
     else:
-        color = "32"
-    msg = "[*] %s. %s" % (msg, getTimestamp(includeDate=True))
+        color = "32" 
+
+    if includeTimestamp:
+        msg = "[*] %s. %s" % (msg, getTimestamp(includeDate=True))
+    else:
+        msg = "[*] %s." % msg
     #print("\033[1;%sm%s\n%s\033[1;m" % (color, msg, '-'*len(msg))) # Print dashes under the message
     print("\033[1;%sm%s\033[1;m" % (color, msg))
 

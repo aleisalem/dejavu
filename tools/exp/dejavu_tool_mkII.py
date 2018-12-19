@@ -16,6 +16,7 @@ def defineArguments():
     parser.add_argument("-x", "--inputdir", help="The directory containing the APKs", required=True)
     parser.add_argument("-c", "--classifier", help="The path to the classifier trained using AMD+Gplay traces", required=False, default="classifier.txt")
     parser.add_argument("-i", "--infodir", help="The directory containing the pre-extracted app info used for APK matching", required=True)
+    parser.add_argument("-a", "--apkdir", help="The directory containing the APK's of the benign apps", required=True)
     parser.add_argument("-f", "--featuretype", help="The type of features to consider", required=False, default="static", choices=["static", "dynamic"])
     parser.add_argument("-e", "--matchingdepth", help="The rigorosity of app matching", type=int, required=False, default=1, choices=[1,2,3,4])
     parser.add_argument("-t", "--matchingthreshold", help="The percentage beyond which apps are considered similar", type=float, required=False, default=0.8)
@@ -98,6 +99,7 @@ def main():
                         # Distance is greater than or equal matching threshold (d_match)
                         target_key = lookup[name]
                         prettyPrint("Match with \"%s\" of %s. Performing level 1 matching." % (target_key, score), "output")
+                        prettyPrint("Matching \"%s/tmp_%s/\" and \"%s/%s_data/\"" % (arguments.inputdir, app_info["package"], arguments.infodir, target_key), "debug")
                         similarity = matchTwoAPKs("%s/tmp_%s/" % (arguments.inputdir, app_info["package"]), "%s/%s_data/" % (arguments.infodir, target_key), 1)
                         if similarity >= arguments.matchingthreshold:
                             # Retrieve more info about the match
@@ -112,26 +114,80 @@ def main():
                                 compiler = "n/a"
                             prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
                             matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
+                            prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
+
+                            # [PAPER] At this point, we matched original app (a) to test app (a*) (i.e., match(a, a*) >= t_match) 
+                            # Figure out where the matched app resides
+                            if os.path.exists("%s/GPlay/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/GPlay/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Original/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Original/%s.apk" % (arguments.apkdir, target_key)
+                            else:
+                                matched_app = None
                             if compiler.lower().find("dx") != -1 or compiler.lower().find("dexmerge") != -1:
-                                # Just make sure it is not developed by the same developer
-                                prettyPrint("Comparing issuer(s) of %s and %s" % (app_info["package"], matched_info["package"]), "debug")
+                                # [PAPER] If compiler(a*) == dx/dexmerge:
+                                # [PAPER] Common theme: access to source code - scenario (5)
+                                # [PAPER] Scenario(s): (1) App (a*) is the same benign app, (2) app (a*) is a malicious app written from scratch to resemble (a),
+                                # [PAPER] ............ (3) app (a*) is malicious written by same author, (4) app (a*) is repackaged version of (a) whose code is available,
+                                # [PAPER] ............ (5) app (a*) is repackaged version of (a) with forged compiler
                                 if matched_compiler == compiler:
-                                    # Exact same compiler. Check whether new code has been added
-                                    # Figure out where the matched app resides
-                                    if os.path.exists("../data/app_apk/GPlay/%s.apk" % target_key):
-                                        matched_app = "../data/app_apk/GPlay/%s.apk" % target_key
-                                    elif os.path.exists("../data/app_apk/Original/%s.apk" % target_key):
-                                        matched_app = "../data/app_apk/Original/%s.apk" % target_key
-                                    else:
-                                        matched_app = None
-                                    # Do the comparison
+                                    # [PAPER] compiler(a) = compiler(a*) (dx vs. dx)
+                                    # [PAPER] Compare code(a*) and code(a) (i.e., minus resources)
                                     if matched_app:
-                                        prettyPrint("Checking code added by \"%s\" to \"%s\"" % (app, matched_app), "debug")
-                                        codeAdded = diffAppCode(app, matched_app)
-                                        if len(codeAdded) == 0:
-                                            # That means that no code has been added to the matched app
-                                            predictedLabel = 0 
-                            
+                                        # Found the APK of the matched app (This should always be true, but in case we clean up manually misclassified apps)
+                                        prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
+                                        codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
+                                        # Expecting dictionary of {"differences": {[class_name]: [different_code]}, "original": [package_name], "piggybacked": [package_name]}
+                                        if len(codeDiff) == 0:
+                                            # That means that an exception has occurred and the returned dictionary is empty (Defer to clf)
+                                            predictedLabel = -1
+                                        else:
+                                            if codeDiff["differences"] == True:
+                                                # [PAPER] code(a*) != code(a): Assume scenarios (2)-(4) and return malicious
+                                                # TODO: Check app version in case of update
+                                                predictedLabel = 1
+                                            else:
+                                                # [PAPER] code(a*) == code(a): Assume scenarion (1) or maybe same developer making a simple adjustment (e.g., to resources)
+                                                predictedLabel = 0
+                                else:
+                                    # [PAPER] compiler(a) == dexlib and compiler(a*) == dx/dexmerge: Defer to classifier
+                                    predictedLabel = -1
+
+                            else:
+                                # [PAPER] compiler(a*) == dexlib
+                                if matched_compiler.find("dx") != -1:
+                                    # [PAPER] if compiler(a*) == dexlib and compiler(a) == dx/dexmerge
+                                    # [PAPER] Scenario(s): (1) App (a*) is a malicious repackaged version of app (a)
+                                    # [PAPER} ............ (2) app (a*) is the same benign app with a lazy developer editing something
+                                    prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
+                                    codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
+                                    if len(codeDiff) == 0:
+                                        # An exception has occurred = defer to classifier
+                                        predictedLabel = -1
+                                    else:
+                                        if codeDiff["differences"] == True:
+                                            # [PAPER] Original code is in "dx", repackaged in "dexlib", code is different = repackaged
+                                            predictedLabel = 1
+                                        else:
+                                            # [PAPER] code(a*) == code(a): lazy developer scenario
+                                            predictedLabel = 0
+                                else:
+                                    # [PAPER] compiler(a*) == compiler(a) == dexlib
+                                    # [PAPER] Same app? Let us check the code
+                                    prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
+                                    codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
+                                    if len(codeDiff) == 0:
+                                        # An exception has occurred = defer to classifier
+                                        predictedLabel = -1
+                                    else:
+                                        if codeDiff["differences"] == True:
+                                            # [PAPER] compiler(a*) == compiler(a) == dexlib ^ code(a*) != code(a): defer to classifier 
+                                            predictedLabel = -1
+                                        else:
+                                            # [PAPER] compiler(a*) == compiler(a) == dexlib ^ code(a*) == code(a): assume same benign app
+                                            predictedLabel = 0
+
+                            # Keep track of matched app and register matching technique for statistical purposes
                             matched_with = target_key 
                             prediction_method = "quick_matching"
              
@@ -152,7 +208,7 @@ def main():
                 if max(classes) >= arguments.classthreshold:
                     predictedLabel = classes.index(max(classes))
                     prediction_method = "classification"
-                    matched_with = "n/a"
+                    #matched_with = "n/a"
                 
             if predictedLabel == -1:
                 # Could not classify with confidence using naive Bayes
@@ -170,15 +226,15 @@ def main():
                         malicious += 1
 
                 predictedLabel = 1 if malicious >= len(matchings)/2 else 0
-                prediction_method = "majority_vote"
-                matched_with = "n/a"
+                prediction_method = "deep_matching"
+                matched_with = "%s apps" % len(matchings)
 
             # Append results to lists
             predicted.append(predictedLabel)
             end_time = time.time() # End timing classification here
             prettyPrint("%s app \"%s\" classified as %s" % (labels[originalLabel], app[app.rfind('/')+1:], labels[predictedLabel]), "info2")
             # Add record to performance
-            compiler = compiler if prediction_method == "quick_matching" else "n/a"
+            #compiler = compiler if prediction_method == "quick_matching" else "n/a"
             #matched_with = target_key if prediction_method == "quick_matching" else "n/a"
                
             if prediction_method == "classification":

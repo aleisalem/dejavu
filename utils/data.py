@@ -3,7 +3,8 @@
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
-import os, random, subprocess, pickle, zipfile, shutil, json, exceptions, time
+import os, random, subprocess, pickle, zipfile, shutil
+import json, exceptions, time, difflib, requests
 import numpy
 from androguard.misc import *
 import networkx as nx
@@ -11,84 +12,118 @@ from skimage.measure import compare_ssim
 import imutils
 import cv2
 
-def simCertificateOwners(ownerA, ownerB):
+
+def diffAppCode(app1, app2, fastMode=False):
     """
-    Compares the issuers of two certificates
-    :param ownerA: The issuer details of the first certificate
-    :type ownerA: str
-    :param ownerB: The issuer details of the second certificate
-    :type ownerB: str
-    :return: float depicting the similarity between the two issuers
+    Diffs (app1-app2) the source code of two Android apps
+    :param app1: The path to the app to which new code is presumed to be added (e.g., repackaged malware)
+    :type app1: str
+    :param app2: The path to the app used as reference point
+    :type app2: str
+    :param fastMode: Whether to return once any difference has been found (default: False)
+    :type fastMode: boolean
+    :return: A dict including different classes and the different code in them
     """
     try:
-        # Parse two strings to extract data
-        dataA, dataB = {}, {}
-        delimiterA = ';' if issuerA.find('; ') != -1 else ','
-        delimiterB = ';' if issuerB.find('; ') != -1 else ','
-        for t in issuerA.split("%s " % delimiterA):
-            if len(t) > 0:
-                key, value = t.split(": ")
-                dataA[key] = value
-
-        for t in issuerB.split("%s " % delimiterB):
-            if len(t) > 0:
-                key, value = t.split(": ")
-                dataB[key] = value
-
-        # Gather common keys
-        commonKeys = list(set.intersection(set(dataA.keys()), set(dataB.keys())))
-        sims = []
-        for key in commonKeys:
-            sims.append(stringRatio(dataA[key], dataB[key]))
+        prettyPrint("Analyzing apps")
+        apk1, dex1, vm1 = AnalyzeAPK(app1)
+        apk2, dex2, vm2 = AnalyzeAPK(app2)
+        dex1, dex2 = dex1[0], dex2[0]
+        # Start diffing
+        diff = {}
+        # Add the packaged names 
+        diff["piggybacked"], diff["original"], diff["differences"] = apk1.get_package(), apk2.get_package(), {}
+        # 1.0 If fastMode enabled, try diffing the classes.dex first to save time
+        if fastMode:
+            try:
+                prettyPrint("Diffing the \"classes.dex\" files")
+                if hashlib.sha1(apk1.get_file('classes.dex')).hexdigest() == hashlib.sha1(apk2.get_file('classes.dex')).hexdigest():
+                    diff["differences"] = False
+                    return diff
+            except Exception as e:
+                prettyPrint("Could not diff the \"classes.dex\". Trying decompiled code", "warning")
             
-    except Exception as e:
-        prettyPrintError(e)
-        return 0.0
+        # 1.1. Retrieve newly-added classes
+        new_classes = list(set(dex1.get_classes_names()).difference(dex2.get_classes_names()))
+        if len(new_classes) > 0:
+            # Return if fastMode enabled
+            if fastMode:
+                diff["differences"] = True
+                prettyPrint("Apps \"%s\" and \"%s\" are different. Returning \"True\"" % (app1, app2), "debug")
+                return diff
+
+            # 1.2. Add code to diff dictionary
+            prettyPrint("Adding %s newly-added classes to difference" % len(new_classes)) 
+            for new_class in new_classes:
+                c = dex1.get_class(new_class)
+                diff["differences"][new_class] = c.get_source()
+
+        # Diff existing classes
+        old_classes = list(set(dex1.get_classes_names()).intersection(set(dex2.get_classes_names())))
+        prettyPrint("Checking %s common classes" % len(old_classes))
+        for old_class in old_classes:
+            different = False
+            source1, source2 = dex1.get_class(old_class).get_source(), dex2.get_class(old_class).get_source()
+            # Get raw code
+            raw1, raw2 = "N/A", "N/A"
+            try:
+                raw1 = dex1.get_class(old_class).get_raw()    
+            except KeyError as ke:
+                #prettyPrint("Could not retrieve raw code of class \"%s\" from \"%s\"" % (old_class, app1), "warning")
+                pass
+            try:
+                raw2 = dex2.get_class(old_class).get_raw()    
+            except KeyError as ke:
+                #prettyPrint("Could not retrieve raw code of class \"%s\" from \"%s\"" % (old_class, app2), "warning")
+                pass
+
+            # Compare hashes of source code first
+            if hashlib.sha1(source1).hexdigest() != hashlib.sha1(source2).hexdigest():
+                differet = True
+                # Compare the raw code if available
+                if raw1 != "N/A" and raw2 != "N/A":
+                    if hashlib.sha1(raw1).hexdigest() == hashlib.sha1(raw2).hexdigest():
+                        # Glitch in decompilation?
+                        different = False
+
+                # Last line of defense in case of inconsistency
+                if min(len(source1), len(source2)) / max(len(source1), len(source2)) >= 0.95 and stringRatio(source1, source2) >= 0.95:
+                    # False alarm? Carry on
+                    #prettyPrint("Yo, weird case here!! \"[CLASS]: %s,\n\t>> len(source1)=%s, len(source2)=%s,\n\t>> stringRatio(source1, source2)=%s,\n\t>> SHA1(source1)=%s,\n\t  SHA1(source2)=%s" % (old_class, len(source1), len(source2), stringRatio(source1, source2), hashlib.sha1(source1).hexdigest(), hashlib.sha1(source2).hexdigest()), "warning")
+                    #print diffStrings(source1, source2)
+                    different = False
+                    
+                # Return if fastMode enabled
+                if different:
+                    if fastMode:
+                        diff["differences"] = True
+                        prettyPrint("Apps \"%s\" and \"%s\" are different. Returning \"True\"" % (app1, app2), "debug")
+                        return diff
+                
+                    # Add different code to dictionary
+                    prettyPrint("Class \"%s\" is different. Retrieving differences" % old_class, "debug")
+                    new_code = str(set(source1.split("\n")).difference(set(source2.split("\n"))))
+                    diff["differences"][old_class] = new_code
     
-    sim = 0.0 if len(sims) < 1 else sum(sims)/float(len(sims))
 
-    return sim
-
-def simImages(imgA, imgB):
-    """
-    Compares the structure similarity of two images and retrurns the SSIM similarity
-    :param imgA: The path to the first image
-    :type imgA: str
-    :param imgB: The path to the second image
-    :type imgB: str
-    :return: float depicting the SSIM similarity between the two images
-    """
-    try:
-        # load the two input images
-        imageA = cv2.imread(imgA)
-        imageB = cv2.imread(imgB)
-        score = -1.0
- 
-        # convert the images to grayscale
-        grayA = cv2.cvtColor(imageA, cv2.COLOR_BGR2GRAY)
-        grayB = cv2.cvtColor(imageB, cv2.COLOR_BGR2GRAY)
-
-        # resize images in case of mismatching dimensions
-        # resize smaller images to bigger ones
-        if grayA.shape > grayB.shape:
-            grayB.resize(grayA.size)
-            grayA.resize(grayA.size)
-
-        elif grayA.shape < grayB.shape:
-            grayA.resize(grayB.size)
-            grayB.resize(grayB.size)
-
-        # compute the Structural Similarity Index (SSIM) between the two
-        # images, ensuring that the difference image is returned
-        (score, sim) = compare_ssim(grayA, grayB, full=True)
-        sim = (sim * 255).astype("uint8")
-        
-        #print("SSIM: {}".format(score))
     except Exception as e:
         prettyPrintError(e)
-        return 0.0      
+        return {}
 
-    return score
+    return diff
+
+
+def diffStrings(expected, actual):
+    """
+    Helper function. Returns a string containing the unified diff of two multiline strings.
+    
+    """
+    expected=expected.splitlines(1)
+    actual=actual.splitlines(1)
+
+    diff=difflib.unified_diff(expected, actual)
+
+    return ''.join(diff)
 
 def diffTraces(traceX, traceY, ignoreArguments=True):
     """
@@ -115,49 +150,6 @@ def diffTraces(traceX, traceY, ignoreArguments=True):
         return -1
 
     return diffs
-
-def diffAppCode(app1, app2):
-    """
-    Diffs (app1-app2) the source code of two Android apps
-    :param app1: The path to the app to which new code is presumed to be added (e.g., repackaged malware)
-    :type app1: str
-    :param app2: The path to the app used as reference point
-    :type app2: str
-    :return: A dict including different classes and the different code in them
-    """
-    try:
-        prettyPrint("Analyzing apps")
-        apk1, dex1, vm1 = AnalyzeAPK(app1)
-        apk2, dex2, vm2 = AnalyzeAPK(app2)
-        dex1, dex2 = dex1[0], dex2[0]
-        # Start diffing
-        diff = {}
-        # 1.1. Retrieve newly-added classes
-        new_classes = list(set(dex1.get_classes_names()).difference(dex2.get_classes_names()))
-        prettyPrint("Adding %s newly-added classes to difference" % len(new_classes)) 
-        # 1.2. Add code to diff dictionary
-        for new_class in new_classes:
-            c = dex1.get_class(new_class)
-            diff[new_class] = c.get_source()
-        # Diff existing classes
-        old_classes = list(set(dex1.get_classes_names()).intersection(set(dex2.get_classes_names())))
-        prettyPrint("Checking %s common classes" % len(old_classes))
-        for old_class in old_classes:
-            source1, source2 = dex1.get_class(old_class).get_source(), dex2.get_class(old_class).get_source()
-            if hashlib.sha1(source1).hexdigest() != hashlib.sha1(source2).hexdigest():
-                prettyPrint("Class \"%s\" is different. Retrieving differences" % old_class, "debug")
-                new_code = str(set(source1.split("\n")).difference(set(source2.split("\n"))))
-                diff[old_class] = new_code
-    
-        # Add the packaged names 
-        diff["piggybacked"], diff["original"] = apk1.get_package(), apk2.get_package()
-
-    except Exception as e:
-        prettyPrintError(e)
-        return {}
-
-    return diff
-
 
 def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
     """
@@ -232,8 +224,46 @@ def hex_to_rgb(value):
     lv = len(value)
     return tuple(int(value[i:i+lv/3], 16) for i in range(0, lv, lv/3))
 
-def rgb_to_hex(rgb):
-    return '%02x%02x%02x' % rgb
+def getPackageNameFromAPK(apkPath):
+    """
+    Retrieves the package name from an APK using AAPT
+    :param apkPath: The path to the APK archive to process
+    :type apkPath: str
+    :return: A string depicting the retrieved packaged name
+    """
+    try:
+        pkg_cmd = ["aapt", "dump", "badging", apkPath]
+        pkg_cmd_output = subprocess.Popen(pkg_cmd, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).communicate()[0]                                                                       
+        magic = "package: name='"
+        index = pkg_cmd_output.find(magic)+len(magic)                                           
+        app_pkg = pkg_cmd_output[index:pkg_cmd_output.find("'", index)].replace(" ", "")
+    except Exception as e:
+        prettyPrintError(e)
+        return ""
+
+    return app_pkg
+
+def getVTReport(VTAPIKey, VTHash, allinfo="true"):
+    """
+    Download the report corresponding to a hash from VirusTotal
+    :param VTAPIKey: The VirusTotal API key needed to download the report
+    :type VTAPIKey: str
+    :param VTHash: The SHA1 or SHA256 hash of the resource
+    :type VTHash: str
+    :param allinfo: Whether to download the full or short report from VirusTotal (true [Default]/false)
+    :type allinfo: str
+    :return: A dict containing the report downloaded from VirusTotal
+    """
+    try:
+        URL = "https://www.virustotal.com/vtapi/v2/file/report?apikey=%s&resource=%s&allinfo=%s" % (VTAPIKey, VTHash, allinfo)
+        response = requests.get(URL).text
+        if len(response) > 0:
+            return json.loads(response)
+
+    except Exception as e:
+        print "[*] Error encountered: %s" % e
+        return {}
+
 
 def injectBehaviorInTrace(targetTrace, insertionProbability, multipleBehaviors=False):
     """
@@ -345,7 +375,7 @@ def logEvent(msg):
 
     return True 
 
-def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=300):
+def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=300, labeling="vt1-vt1"):
     """
     Compares and attempts to match two APK's and returns a similarity measure
     :param sourceAPK: The path to the source APK (the original app you wish to match)
@@ -364,6 +394,8 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
     :type fastSearch: boolean
     :param matchingTimeout: The time (in seconds) to allow the matching process to continue
     :type matchingTimeoue: int
+    :param labeling: The labeling scheme adopted to label APK's as malicious and benign
+    :type labeling: str
     :return: A list of str depicting the top [matchWith] apps similar to [sourceAPK] with more thatn [matchingThreshold] percetange
     """
     try:
@@ -397,7 +429,22 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 # Load pre-extracted target app information
                 targetInfo = eval(open("%s/data.txt" % targetAPK).read())
                 targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
-                targetLabel = eval(open("%s/label" % targetAPK).read())
+                # Retrieve the APK's label according to a labeling scheme
+                targetLabel = -1
+                if os.path.exists("%s/%s" % (VT_REPORTS_DIR, targetAPK.replace(".apk", ".report"))):
+                    report = eval(open("%s/%s" % (VT_REPORTS_DIR, targetAPK.replace(".apk", ".report")).read()))
+                    if "positives" in report.keys():
+                        if labeling == "vt1-vt1":
+                            targetLabel = 1 if report["positives"] >= 1 else 0
+                        elif labeling == "vt50p-vt50p":
+                            targetLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
+                        elif labeling == "vt50p-vt1":
+                            if report["positives"]/float(report["total"]) >= 0.5:
+                                targetLabel = 1
+                            elif report["positives"] == 0:
+                                targetLabel = 0
+                            else:
+                                targetLabel = -1
   
                 # Start the comparison
                 differences = []
@@ -410,7 +457,7 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                     sourceIcon = "%s/tmp_%s/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["package"], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
                     targetIcon = "%s/%s" % (targetAPK, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
                     if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
-                        differences.append(diffImages(sourceIcon, targetIcon))
+                        differences.append(simImages(sourceIcon, targetIcon))
      
                 if matchingDepth >= 2:
                     differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
@@ -514,7 +561,7 @@ def matchTwoAPKs(sourceDir, targetDir, matchingDepth=1, useSimiDroid=False):
                 sourceIcon = "%s/%s" % (sourceDir, sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
                 targetIcon = "%s/%s" % (targetDir, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
                 if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
-                    differences.append(diffImages(sourceIcon, targetIcon))
+                    differences.append(simImages(sourceIcon, targetIcon))
 
             if matchingDepth >= 2:
                 differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
@@ -561,3 +608,84 @@ def matchTwoAPKs(sourceDir, targetDir, matchingDepth=1, useSimiDroid=False):
 
     return similarity
 
+def rgb_to_hex(rgb):
+    return '%02x%02x%02x' % rgb
+
+def simCertificateOwners(ownerA, ownerB):
+    """
+    Compares the issuers of two certificates
+    :param ownerA: The issuer details of the first certificate
+    :type ownerA: str
+    :param ownerB: The issuer details of the second certificate
+    :type ownerB: str
+    :return: float depicting the similarity between the two issuers
+    """
+    try:
+        # Parse two strings to extract data
+        dataA, dataB = {}, {}
+        delimiterA = ';' if issuerA.find('; ') != -1 else ','
+        delimiterB = ';' if issuerB.find('; ') != -1 else ','
+        for t in issuerA.split("%s " % delimiterA):
+            if len(t) > 0:
+                key, value = t.split(": ")
+                dataA[key] = value
+
+        for t in issuerB.split("%s " % delimiterB):
+            if len(t) > 0:
+                key, value = t.split(": ")
+                dataB[key] = value
+
+        # Gather common keys
+        commonKeys = list(set.intersection(set(dataA.keys()), set(dataB.keys())))
+        sims = []
+        for key in commonKeys:
+            sims.append(stringRatio(dataA[key], dataB[key]))
+            
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0
+    
+    sim = 0.0 if len(sims) < 1 else sum(sims)/float(len(sims))
+
+    return sim
+
+def simImages(imgA, imgB):
+    """
+    Compares the structure similarity of two images and retrurns the SSIM similarity
+    :param imgA: The path to the first image
+    :type imgA: str
+    :param imgB: The path to the second image
+    :type imgB: str
+    :return: float depicting the SSIM similarity between the two images
+    """
+    try:
+        # load the two input images
+        imageA = cv2.imread(imgA)
+        imageB = cv2.imread(imgB)
+        score = -1.0
+ 
+        # convert the images to grayscale
+        grayA = cv2.cvtColor(imageA, cv2.COLOR_BGR2GRAY)
+        grayB = cv2.cvtColor(imageB, cv2.COLOR_BGR2GRAY)
+
+        # resize images in case of mismatching dimensions
+        # resize smaller images to bigger ones
+        if grayA.shape > grayB.shape:
+            grayB.resize(grayA.size)
+            grayA.resize(grayA.size)
+
+        elif grayA.shape < grayB.shape:
+            grayA.resize(grayB.size)
+            grayB.resize(grayB.size)
+
+        # compute the Structural Similarity Index (SSIM) between the two
+        # images, ensuring that the difference image is returned
+        (score, sim) = compare_ssim(grayA, grayB, full=True)
+        sim = (sim * 255).astype("uint8")
+        
+        #print("SSIM: {}".format(score))
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0      
+
+    return score
