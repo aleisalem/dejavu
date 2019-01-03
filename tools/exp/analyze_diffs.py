@@ -4,7 +4,7 @@ from dejavu.utils.graphics import *
 from dejavu.utils.data import *
 from dejavu.conf.config import *
 import pickle
-import argparse, os, glob, random, requests
+import argparse, os, glob, random, requests, re
 
 safeRating = "The latest tests indicate that this URL contains no malicious software and shows no signs of phishing."
 dangerousRating = "The latest tests indicate that this URL contains malicious software or phishing."
@@ -42,7 +42,9 @@ def main():
         # 2. Include APK's that comply with the labeling scheme
         differences = []
         analysis = {}
+        vtRequests = 0
         for app in allApps:
+            prettyPrint("Labeling retrieved APK: \"%s\"" % app)
             # Decide upon the feature vector's class according to [arguments.labeling]
             if not os.path.exists("%s/%s" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report"))):
                 prettyPrint("Could not retrieve a VirusTotal report \"%s/%s\". Skipping" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report")), "warning")
@@ -118,27 +120,42 @@ def main():
             if arguments.analyzeurls == "yes":
                 prettyPrint("Analyzing the domains and URLs contacted by the apps", "debug")
                 report = app[1]
-                url_data = {"app": app[0], "positives": report["positives"], "total": report["total"], "family": n, "urls": {}}
+                url_data = {"app": app[0], "positives": report["positives"], "total": report["total"], "family": n, "urls": []}
                 urls = ""
+                seen_urls = []
                 if "additional_info" in report.keys():
                     if "contacted_domains" in report["additional_info"].keys():
                         for domain in report["additional_info"]["contacted_domains"]:
-                            urls += "%s/" % domain[:domain.rfind("/")]
+                            tmp = re.findall('https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+', domain) # Make sure we trim the URL to exclude resources (e.g., webpages and/or files)
+                            for t in tmp:
+                                if not t in seen_urls:
+                                    seen_urls.append(t)
+                                    #print t 
+                                    if vtRequests < 20000:
+                                        response = requests.get("https://www.virustotal.com/vtapi/v2/url/report", params={"apikey": VT_API_KEY, "resource": t})
+                                        vtRequests += 1
+                                        url_data["urls"].append(response.json())
+                                    else:
+                                        prettyPrint("Already exceeded the VirusTotal daily quota of 20,000 requests", "warning")
+                                        url_data["urls"].append({})
 
-                # Do the same for the contacted url if "android-behaviour" is available
-                if "additional_info" in report.keys():
+                    # Do the same for the contacted url if "android-behaviour" is available
                     if "android-behaviour" in report["additional_info"].keys():
                         if "contacted_urls" in report["additional_info"]["android-behaviour"]:
                             for url in report["additional_info"]["android-behaviour"]["contacted_urls"]:
-                                urls += "%s/" % url["url"][:url["url"].rfind("/")]
+                                tmp = re.findall('https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+', url["url"]) # Same as above
+                                for t in tmp:
+                                    if not t in seen_urls:
+                                        seen_urls.append(t)
+                                        if vtRequests < 20000:
+                                            response = requests.get("https://www.virustotal.com/vtapi/v2/url/report", params={"apikey": VT_API_KEY, "resource": t})
+                                            vtRequests += 1
+                                            url_data["urls"].append(response.json())
+                                        else:
+                                            prettyPrint("Already exceeded the VirusTotal daily quota of 20,000 requests", "warning")
+                                            url_data["urls"].append({})                                        
 
-                print urls
-                if len(urls) > 1:
-                    response = requests.get("http://api.mywot.com/0.4/public_link_json2?hosts=%s&key=%s" % (urls, WOT_API_KEY))
-                    print response.text
-                    url_data["urls"] = eval(response.text)
-                
-                print url_data
+                # Add url data to analysis 
                 analysis["urls"].append(url_data)
 
         # 4. Add the stats
@@ -164,7 +181,7 @@ def main():
             prettyPrint("\t%s = %s" % (k, analysis["summary"][k]), "output", False)
 
         if arguments.saveresults == "yes":  
-            diffFile = "dejavu_diffs_%s_%s.txt" % (arguments.experimentname, arguments.labeling)
+            diffFile = "Dejavu_diffs_%s_%s.txt" % (arguments.experimentname, arguments.labeling)
             prettyPrint("Saving differences to \"%s\"" % diffFile)
             open(diffFile, "w").write(str(analysis))
 

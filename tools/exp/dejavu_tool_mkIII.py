@@ -12,7 +12,7 @@ import argparse, os, glob, random, sys, operator, logging, shutil, time, signal
 from exceptions import KeyError
 
 def defineArguments():
-    parser = argparse.ArgumentParser(prog="dejavu_tool.py", description="Implements the hybrid process to detect repackaged malware")
+    parser = argparse.ArgumentParser(prog="dejavu_tool.py", description="Implements the ensemble process to detect repackaged malware")
     parser.add_argument("-x", "--inputdir", help="The directory containing the APKs", required=True)
     parser.add_argument("-c", "--classifier", help="The path to the classifier trained using AMD+Gplay traces", required=True)
     parser.add_argument("-r", "--clusters", help="The path to the file containing the benign apps clusters", required=True)
@@ -20,11 +20,10 @@ def defineArguments():
     parser.add_argument("-a", "--apkdir", help="The directory containing the APK's of the benign apps", required=True)
     parser.add_argument("-f", "--featuretype", help="The type of features to consider", required=False, default="static", choices=["static", "dynamic"])
     parser.add_argument("-e", "--matchingdepth", help="The rigorosity of app matching", type=int, required=False, default=2, choices=[1,2,3,4])
-    parser.add_argument("-t", "--matchingthreshold", help="The percentage beyond which apps are considered similar", type=float, required=False, default=0.8)
-    parser.add_argument("-s", "--classthreshold", help="The classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
+    parser.add_argument("-t", "--thresholds", help="The thresholds used during the experiments, depicts: (1) percentage beyond which apps are considered similar, and (2) the classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
     parser.add_argument("-l", "--experimentlabel", help="Give a label to the experiment currently run by the tool", required=False, default="Dejavu experiment")
-    parser.add_argument("-u", "--cleanup", help="Whether to remove the directories containing data about the analyzed and tested apps", required=False, default="no", choices=["yes", "no"])
     parser.add_argument("-b", "--labeling", help="The type of labeling scheme to employ in deeming apps as [malicious-benign]", required=False, default="vt1-vt1", choices=["vt1-vt1", "vt50p-vt50p", "vt50p-vt1"])
+    parser.add_argument("-u", "--cleanup", help="Whether to remove the directories containing data about the analyzed and tested apps", required=False, default="no", choices=["yes", "no"])
     return parser
 
 def main():
@@ -67,7 +66,7 @@ def main():
             def signal_handler(sig, frame):
                 if len(performance) > 0:
                     prettyPrint("Received Ctrl+C signal. Saving performance file", "error")
-                    open("Dejavu_results_%s_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.matchingthreshold, arguments.labels), "w").write(str(performance))
+                    open("Dejavu_results_%s_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.thresholds, arguments.labels), "w").write(str(performance))
                 sys.exit(0)
             signal.signal(signal.SIGINT, signal_handler)
             # End of Handle Ctrl+C events without losing data
@@ -99,7 +98,7 @@ def main():
                         continue
                     # Compute the distance between the current app's package name and the current cluster's center
                     score = stringRatio(app_info["package"], name)
-                    if score >= arguments.matchingthreshold:
+                    if score >= arguments.thresholds:
                         # Distance is greater than or equal matching threshold (d_match)
                         target_key = lookup[name]
                         prettyPrint("Match with \"%s\" of %s. Performing level 1 matching." % (target_key, score), "output")
@@ -110,7 +109,7 @@ def main():
                         # Match the two apps
                         prettyPrint("Matching \"%s/tmp_%s/\" and \"%s/%s_data/\"" % (arguments.inputdir, app_info["package"], arguments.infodir, target_key), "debug")
                         similarity = matchTwoAPKs("%s/tmp_%s/" % (arguments.inputdir, app_info["package"]), "%s/%s_data/" % (arguments.infodir, target_key), 1)
-                        if similarity >= arguments.matchingthreshold:
+                        if similarity >= arguments.thresholds:
                             # Retrieve more info about the match
                             if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, target_key)):
                                 matched_info = eval(open("%s/%s_data/data.txt" % (arguments.infodir, target_key)).read())
@@ -119,7 +118,7 @@ def main():
                             output = scan(app, 60, "yes")
                             try:
                                 compiler = output["files"][0]["results"]["compiler"][0]
-                            except KeyError as ke:
+                            except Exception as e:
                                 compiler = "n/a"
                             prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
 
@@ -141,7 +140,7 @@ def main():
                                 output = scan(matched_app, 60, "yes") 
                                 try:
                                     matched_compiler = output["files"][0]["results"]["compiler"][0]
-                                except KeyError as ke:
+                                except Exception as e:
                                     matched_compiler = "n/a"
                             else:
                                 matched_compiler = "n/a"
@@ -229,7 +228,7 @@ def main():
 
                 classes = clf.predict_proba(app_static_features).tolist()[0]
                 prettyPrint("App \"%s\" classified as benign with P(C=0.0|app)=\"%s\" and as malicious with P(C=1.0|app)=\"%s\" " % (app, classes[0], classes[1]), "output")
-                if max(classes) >= arguments.classthreshold:
+                if max(classes) >= arguments.thresholds:
                     predictedLabel = classes.index(max(classes))
                     prediction_method = "classification"
                     matched_with = "n/a" if matched_with == "" else matched_with # In case (a*) was not matched with any apps in Quick matching
@@ -240,8 +239,8 @@ def main():
                 # 3. Try deep matching #
                 ########################
                 prettyPrint("Classification also did not work. Trying deep matching")
-                matchings = matchAPKs(app, arguments.infodir, matchingDepth=arguments.matchingdepth, matchWith=10, matchingThreshold=arguments.matchingthreshold, labeling=arguments.labeling)
-                prettyPrint("Successfully matched app \"%s\" with %s apps using threshold %s" % (app, len(matchings), arguments.matchingthreshold))
+                matchings = matchAPKs(app, arguments.infodir, matchingDepth=arguments.matchingdepth, matchWith=10, matchingThreshold=arguments.thresholds, labeling=arguments.labeling)
+                prettyPrint("Successfully matched app \"%s\" with %s apps using threshold %s" % (app, len(matchings), arguments.thresholds))
                 malicious = 0
                 for m in matchings:
                     color = "error" if matchings[m][1] == 1 else "debug"
@@ -286,7 +285,7 @@ def main():
                     output = scan(app, 60, "yes")
                     try:
                         compiler = output["files"][0]["results"]["compiler"][0]
-                    except KeyError as ke:
+                    except Exception as e:
                         compiler = "n/a"
 
                 if prediction_method == "classification":
@@ -304,7 +303,7 @@ def main():
         prettyPrint("Specificity: %s" % metrics_all["specificity"], "output")
         prettyPrint("F1 Score: %s" % metrics_all["f1score"], "output")
         # Save gathered performance metrics
-        open("Dejavu_results_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.matchingthreshold), "w").write(str(performance))
+        open("Dejavu_results_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.thresholds), "w").write(str(performance))
 
         # Clean up?         
         if arguments.cleanup == "yes":
