@@ -24,9 +24,9 @@ def main():
         prettyPrint("Get in line!!")
 
         # 2. Retrieve files
-        files = glob.glob("Dejavu_results_*_%s.txt" % arguments.labeling)
+        files = glob.glob("Dejavu_results_*_%s_*.txt" % arguments.labeling)
         if len(files) < 1:
-            prettyPrint("Could not retrieve files with the pattern \"Dejavu_results_%s_*.txt\"" % arguments.labeling, "warning")
+            prettyPrint("Could not retrieve files with the pattern \"Dejavu_results_*_%s_*.txt\"" % arguments.labeling, "warning")
             return False
 
         prettyPrint("Successfully retrieved %s data files" % len(files))
