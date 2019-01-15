@@ -27,7 +27,7 @@ def main():
         # 2. Retrieve files
         depth = "*" if arguments.depth == "all" else arguments.depth
         thresholds = "*" if arguments.thresholds == "all" else arguments.thresholds
-        files = glob.glob("Dejavu_results_%s_%s_%s.txt" % (arguments.dataset, arguments.labeling, depth, thresholds))
+        files = glob.glob("Dejavu_results_%s_%s_%s_%s.txt" % (arguments.dataset, arguments.labeling, depth, thresholds))
         if len(files) < 1:
             prettyPrint("Could not retrieve files with the pattern \"Dejavu_results_%s_*_%s_%s_%s.txt\"" % (arguments.dataset, arguments.labeling, arguments.depth, arguments.thresholds), "warning")
             return False
