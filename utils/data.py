@@ -375,7 +375,7 @@ def logEvent(msg):
 
     return True 
 
-def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=300, labeling="vt1-vt1"):
+def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, matchWith=1, useSimiDroid=False, fastSearch=True, matchingTimeout=5000, labeling="vt1-vt1"):
     """
     Compares and attempts to match two APK's and returns a similarity measure
     :param sourceAPK: The path to the source APK (the original app you wish to match)
@@ -402,7 +402,10 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
         similarity = 0.0
         # Retrieve information from the source APK
         if not useSimiDroid:
-            sourceInfo = extractAPKInfo(sourceAPK, matchingDepth)
+            sourceInfo = extractAPKInfo(sourceAPK, matchingDepth)[-1]
+            if len(sourceInfo) < 1:
+                prettyPrint("Could not extract any info from \"%s\"" % sourceAPK, "error")
+                return []
 
         targetApps = glob.glob("%s/*" % targetAPKs) if useSimiDroid == False else glob.glob("%s/*.apk" % targetAPKs)
         if len(targetApps) < 1:
@@ -427,12 +430,22 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                     continue
 
                 # Load pre-extracted target app information
-                targetInfo = eval(open("%s/data.txt" % targetAPK).read())
-                targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
+                try:
+                    targetInfo = eval(open("%s/data.txt" % targetAPK).read())
+                    targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
+                except exceptions.EOFError as e:
+                    prettyPrint("Could not read call graph. Skipping", "warning")
+                    continue
+                except Exception as e:
+                    prettyPrint("Could not load target info. Skipping", "warning")
+                    continue
+                    
                 # Retrieve the APK's label according to a labeling scheme
                 targetLabel = -1
-                if os.path.exists("%s/%s" % (VT_REPORTS_DIR, targetAPK.replace(".apk", ".report"))):
-                    report = eval(open("%s/%s" % (VT_REPORTS_DIR, targetAPK.replace(".apk", ".report")).read()))
+                targetKey = targetAPK[targetAPK.rfind("/")+1:].replace("_data", "")
+                if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, targetKey)):
+                    report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, targetKey)).read())
+                    prettyPrint("VirusTotal report \"%s.report\" found" % targetKey, "debug")
                     if "positives" in report.keys():
                         if labeling == "vt1-vt1":
                             targetLabel = 1 if report["positives"] >= 1 else 0
@@ -449,35 +462,48 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 # Start the comparison
                 differences = []
                 if matchingDepth >= 1:
-                    differences.append(stringRatio(sourceInfo["name"], targetInfo["name"]))
-                    differences.append(stringRatio(sourceInfo["package"], targetInfo["package"]))
-                    differences.append(stringRatio(sourceInfo["icon"], targetInfo["icon"]))
+                    if "name" in sourceInfo.keys() and "name" in targetInfo.keys():
+                        differences.append(stringRatio(sourceInfo["name"], targetInfo["name"]))
+                    if "package" in sourceInfo.keys() and "package" in targetInfo.keys():
+                        differences.append(stringRatio(sourceInfo["package"], targetInfo["package"]))
+                    if "icon" in sourceInfo.keys() and "icon" in targetInfo.keys():
+                        differences.append(stringRatio(sourceInfo["icon"], targetInfo["icon"]))
                     #differences.append(stringRatio(sourceInfo["signature"], targetInfo["signature"]))
                     #differences.append(stringRatio(sourceInfo["certificate"], targetInfo["certificate"]))
-                    sourceIcon = "%s/tmp_%s/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["package"], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
-                    targetIcon = "%s/%s" % (targetAPK, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
-                    if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
-                        differences.append(simImages(sourceIcon, targetIcon))
+                        sourceIcon = "%s/tmp_%s/%s" % (sourceAPK[:sourceAPK.rfind("/")], sourceInfo["package"], sourceInfo["icon"]) if sourceInfo["icon"] is not None else ""
+                        targetIcon = "%s/%s" % (targetAPK, targetInfo["icon"][targetInfo["icon"].rfind('/')+1:]) if targetInfo["icon"] is not None else ""
+                        if os.path.exists(sourceIcon) and os.path.exists(targetIcon):
+                            differences.append(simImages(sourceIcon, targetIcon))
      
                 if matchingDepth >= 2:
-                    differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
-                    differences.append(listsRatio(sourceInfo["permissions"], targetInfo["permissions"]))
-                    differences.append(listsRatio(sourceInfo["providers"], targetInfo["providers"]))
-                    differences.append(listsRatio(sourceInfo["receivers"], targetInfo["receivers"]))
-                    differences.append(listsRatio(sourceInfo["services"], targetInfo["services"]))
-                    differences.append(listsRatio(sourceInfo["files"], targetInfo["files"]))
+                    if "activities" in sourceInfo.keys() and "activities" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["activities"], targetInfo["activities"]))
+                    if "permissions" in sourceInfo.keys() and "permissions" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["permissions"], targetInfo["permissions"]))
+                    if "providers" in sourceInfo.keys() and "providers" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["providers"], targetInfo["providers"]))
+                    if "receivers" in sourceInfo.keys() and "receivers" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["receivers"], targetInfo["receivers"]))
+                    if "services" in sourceInfo.keys() and "services" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["services"], targetInfo["services"]))
+                    if "files" in sourceInfo.keys() and "files" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["files"], targetInfo["files"]))
 
                 if matchingDepth >= 3:
-                    differences.append(listsRatio(sourceInfo["libraries"], targetInfo["libraries"]))
-                    differences.append(listsRatio(sourceInfo["classes"], targetInfo["classes"]))
-                    differences.append(listsRatio(sourceInfo["methods"], targetInfo["methods"]))
+                    if "libraries" in sourceInfo.keys() and "libraries" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["libraries"], targetInfo["libraries"]))
+                    if "classes" in sourceInfo.keys() and "classes" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["classes"], targetInfo["classes"]))
+                    if "methods" in sourceInfo.keys() and "methods" in targetInfo.keys():
+                        differences.append(listsRatio(sourceInfo["methods"], targetInfo["methods"]))
 
                 if matchingDepth >= 4:
-                    isomorphic = nx.algorithms.is_isomorphic(sourceInfo["callgraph"], targetInfo["callgraph"])
-                    if isomorphic:
-                        differences.append(1.0)
-                    else:
-                        differences.append(0.0)
+                    if "callgraph" in sourceInfo.keys() and "callgraph" in targetInfo.keys():
+                       isomorphic = nx.algorithms.is_isomorphic(sourceInfo["callgraph"], targetInfo["callgraph"])
+                       if isomorphic:
+                           differences.append(1.0)
+                       else:
+                           differences.append(0.0)
             else:
                 # Use SimiDroid to perform comparison
                 curDir = os.path.abspath(".")
@@ -493,15 +519,18 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.5, mat
                 outContent = json.loads(open(outFile).read())
                 os.chdir(curDir)
 
-            similarity = float(sum(differences))/float(len(differences)) if useSimiDroid == False else float(outContent["conclusion"]["simiScore"])
+            if len(differences) >= 1:
+                similarity = float(sum(differences))/float(len(differences)) if useSimiDroid == False else float(outContent["conclusion"]["simiScore"])
+            else:
+                similarity = 0.0
             prettyPrint("Similarity score: %s" % similarity)
             if similarity >= matchingThreshold:
                 prettyPrint("Got a match between source \"%s\" and app \"%s\", with score %s" % (sourceAPK[sourceAPK.rfind("/")+1:].replace(".apk", ""), targetAPK[targetAPK.rfind("/")+1:].replace(".apk", ""), similarity), "output")
 
                 if useSimiDroid == False:
-                    matchings[targetInfo["package"]] = (similarity, targetLabel[0])
+                    matchings[targetInfo["package"]] = (similarity, targetLabel)
                 else:
-                    matchings[targetAPK] = (similarity, targetLabel[0])
+                    matchings[targetAPK] = (similarity, targetLabel)
 
                 currentTime = time.time()
                 if (fastSearch and len(matchings) >= matchWith) or (currentTime - startTime >= matchingTimeout):
