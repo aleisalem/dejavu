@@ -11,7 +11,7 @@ def defineArguments():
     parser = argparse.ArgumentParser(prog="generate_clusters.py", description="Build clusters of package names used during experiments")
     parser.add_argument("-i", "--indirs", help="A list of directories containing the APKs", required=True, nargs='+')
     parser.add_argument("-n", "--clsname", help="The name of the file containing the clusters", required=True)
-    parser.add_argument("-l", "--labeling", help="The labeling scheme to adopt in choosing the benign apps", default="vt1", choices=["vt1", "vt10p", "vt50p"], required=False)
+    parser.add_argument("-l", "--labeling", help="The labeling scheme to adopt in choosing the benign apps", default="vt1", choices=["old", "vt1", "vt10p", "vt50p"], required=False)
     return parser
 
 def main():
@@ -36,23 +36,28 @@ def main():
         packageToHash = {}
         for app in allApps:
             # Decide upon the feature vector's class according to [arguments.labeling]
-            if not os.path.exists("%s/%s" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report"))):
-                prettyPrint("Could not retrieve a VirusTotal report \"%s/%s\". Skipping" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report")), "warning")
+            if arguments.labeling == "old":
+                # Rely on the original labeling of the dataset's authors
+                benignApps.append(app)
+
             else:
-                # Now decide upon its label
-                vtReport = eval(open("%s/%s" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report"))).read())
-                if not "positives" in vtReport.keys():
-                    print vtReport.keys()
-                    print app
-                    prettyPrint("No trace of the \"positives\" field necessary for labeling. Skipping", "warning")
-                    continue
-                # Check labeling scheme
-                if arguments.labeling == "vt1" and vtReport["positives"] < 1:
-                    benignApps.append(app)
-                elif arguments.labeling == "vt10" and vtReport["positives"] < 10:
-                    benignApps.append(app)
-                elif arguments.labeling == "vt50p" and vtReport["positives"]/float(vtReport["total"]) < 0.50:
-                    benignApps.append(app)
+                if not os.path.exists("%s/%s" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report"))):
+                    prettyPrint("Could not retrieve a VirusTotal report \"%s/%s\". Skipping" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report")), "warning")
+                else:
+                    # Now decide upon its label
+                    vtReport = eval(open("%s/%s" % (VT_REPORTS_DIR, app[app.rfind("/")+1:].replace(".apk", ".report"))).read())
+                    if not "positives" in vtReport.keys():
+                        print vtReport.keys()
+                        print app
+                        prettyPrint("No trace of the \"positives\" field necessary for labeling. Skipping", "warning")
+                        continue
+                    # Check labeling scheme
+                    elif arguments.labeling == "vt1" and vtReport["positives"] < 1:
+                        benignApps.append(app)
+                    elif arguments.labeling == "vt10" and vtReport["positives"] < 10:
+                        benignApps.append(app)
+                    elif arguments.labeling == "vt50p" and vtReport["positives"]/float(vtReport["total"]) < 0.50:
+                        benignApps.append(app)
                
         prettyPrint("Number of APK's to consider for clustering is %s" % len(benignApps), "debug")
  

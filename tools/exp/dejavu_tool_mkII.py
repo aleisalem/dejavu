@@ -12,11 +12,13 @@ import argparse, os, glob, random, sys, operator, logging, shutil, time, signal
 from exceptions import KeyError
 
 def defineArguments():
-    parser = argparse.ArgumentParser(prog="dejavu_tool.py", description="Implements the hybrid process to detect repackaged malware")
+    parser = argparse.ArgumentParser(prog="dejavu_tool_mkII.py", description="Implements the ensemble process to detect repackaged malware")
     parser.add_argument("-x", "--inputdir", help="The directory containing the APKs", required=True)
     parser.add_argument("-c", "--classifier", help="The path to the classifier trained using AMD+Gplay traces", required=False, default="classifier.txt")
     parser.add_argument("-i", "--infodir", help="The directory containing the pre-extracted app info used for APK matching", required=True)
     parser.add_argument("-a", "--apkdir", help="The directory containing the APK's of the benign apps", required=True)
+    parser.add_argument("-r", "--clusters", help="The file containing the package name clusters of benign apps", required=True)
+    parser.add_argument("-p", "--pkgtohash", help="The file containing the package-to-hash translations of apps", required=True)
     parser.add_argument("-f", "--featuretype", help="The type of features to consider", required=False, default="static", choices=["static", "dynamic"])
     parser.add_argument("-e", "--matchingdepth", help="The rigorosity of app matching", type=int, required=False, default=1, choices=[1,2,3,4])
     parser.add_argument("-t", "--matchingthreshold", help="The percentage beyond which apps are considered similar", type=float, required=False, default=0.8)
@@ -46,11 +48,9 @@ def main():
         clf = pickle.loads(open(arguments.classifier).read())
         # Load necessary lookup structures
         prettyPrint("Loading package name clusters")
-        clusters = eval(open("%s/clusters_all.txt" % LOOKUP_STRUCTS).read())
+        clusters = eval(open(arguments.clusters).read())
         prettyPrint("Loading package name lookup dictionary")
-        lookup = eval(open("%s/package_to_hash.txt" % LOOKUP_STRUCTS).read())
-        prettyPrint("Loading app compilers lookup")
-        compilers = eval(open("%s/app_compilers.txt" % LOOKUP_STRUCTS).read())
+        lookup = eval(open(arguments.pkgtohash).read())
         
 
         # Keeping track of performance metrics 
@@ -110,11 +110,9 @@ def main():
                             output = scan(app, 60, "yes")
                             try:
                                 compiler = output["files"][0]["results"]["compiler"][0]
-                            except KeyError as ke:
+                            except Exception as e:
                                 compiler = "n/a"
                             prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
-                            matched_compiler = compilers[target_key] if target_key in compilers.keys() else "n/a"
-                            prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
 
                             # [PAPER] At this point, we matched original app (a) to test app (a*) (i.e., match(a, a*) >= t_match) 
                             # Figure out where the matched app resides
@@ -122,8 +120,25 @@ def main():
                                 matched_app = "%s/GPlay/%s.apk" % (arguments.apkdir, target_key)
                             elif os.path.exists("%s/Original/%s.apk" % (arguments.apkdir, target_key)):
                                 matched_app = "%s/Original/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)
                             else:
                                 matched_app = None
+
+                            # Get compiler of the matched app
+                            if matched_app != None:
+                                output = scan(matched_app, 60, "yes")
+                                try:
+                                    matched_compiler = output["files"][0]["results"]["compiler"][0]
+                                except Exception as e:
+                                    matched_compiler = "n/a"
+                            else:
+                                matched_compiler = "n/a"
+
+                            prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
+
                             if compiler.lower().find("dx") != -1 or compiler.lower().find("dexmerge") != -1:
                                 # [PAPER] If compiler(a*) == dx/dexmerge:
                                 # [PAPER] Common theme: access to source code - scenario (5)
@@ -234,8 +249,8 @@ def main():
             end_time = time.time() # End timing classification here
             prettyPrint("%s app \"%s\" classified as %s" % (labels[originalLabel], app[app.rfind('/')+1:], labels[predictedLabel]), "info2")
             # Add record to performance
-            #compiler = compiler if prediction_method == "quick_matching" else "n/a"
-            #matched_with = target_key if prediction_method == "quick_matching" else "n/a"
+            compiler = compiler if prediction_method == "quick_matching" else "n/a"
+            matched_with = target_key if prediction_method == "quick_matching" else "n/a"
                
             if prediction_method == "classification":
                 prediction_confidence = max(classes)
