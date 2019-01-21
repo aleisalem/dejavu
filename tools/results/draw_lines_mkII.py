@@ -31,7 +31,7 @@ def main():
 
         prettyPrint("Successfully retrieved %s data files" % len(files))
  
-       # 3. Parse data files and collect data
+        # 3. Parse data files and collect data
         files.sort()
         Xmal, Ymal, Ymal2, Vmal, Vmal2 = [], [], [], {}, {}
         Xpiggy, Ypiggy, Ypiggy2, Vpiggy, Vpiggy2 = [], [], [], {}, {}
