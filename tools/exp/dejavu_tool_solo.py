@@ -23,7 +23,9 @@ def defineArguments():
     parser.add_argument("-e", "--matchingdepth", help="The rigorosity of app matching", type=int, required=False, default=2, choices=[1,2,3,4])
     parser.add_argument("-t", "--thresholds", help="The thresholds used during the experiments, depicts: (1) percentage beyond which apps are considered similar, and (2) the classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
     parser.add_argument("-l", "--experimentlabel", help="Give a label to the experiment currently run by the tool", required=False, default="Dejavu experiment")
-    parser.add_argument("-b", "--labeling", help="The type of labeling scheme to employ in deeming apps as [malicious-benign]", required=False, default="vt1-vt1", choices=["vt1-vt1", "vt50p-vt50p", "vt50p-vt1"])
+    parser.add_argument("-y", "--experimenttype", help="Whether the experiment is performed on malicious or benign datasets", required=False, default="malicious", choices=["malicious", "benign"])
+    parser.add_argument("-b", "--labeling", help="The type of labeling scheme to employ in deeming apps as [malicious-benign]", required=False, default="vt1-vt1", choices=["old", "vt1-vt1", "vt50p-vt50p", "vt50p-vt1"])
+    parser.add_argument("-s", "--hustleup", help="Whether to use lookup structs to speed up the experiments", required=False, default="yes", choices=["yes", "no"])
     parser.add_argument("-u", "--cleanup", help="Whether to remove the directories containing data about the analyzed and tested apps", required=False, default="no", choices=["yes", "no"])
     return parser
 
@@ -66,24 +68,42 @@ def main():
         labels = ["Goodware", "Malware"]
         for app in testAPKs:
             # Handle Ctrl+C events without losing data
-            def signal_handler(sig, frame):
-                if len(performance) > 0:
-                    prettyPrint("Received Ctrl+C signal. Saving performance file", "error")
-                    open("Dejavu_results_%s_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.thresholds, arguments.labels), "w").write(str(performance))
-                sys.exit(0)
-            signal.signal(signal.SIGINT, signal_handler)
+            #def signal_handler(sig, frame):
+            #    if len(performance) > 0:
+            #        prettyPrint("Received Ctrl+C signal. Saving performance file", "error")
+            #        open("Dejavu_results_%s_%s_%s_%s.txt" % (arguments.experimentlabel.replace(' ', '_'), arguments.matchingdepth, arguments.thresholds, arguments.labels), "w").write(str(performance))
+            #    sys.exit(0)
+            #signal.signal(signal.SIGINT, signal_handler)
             # End of Handle Ctrl+C events without losing data
             start_time = time.time() # Start timing classification here
             prettyPrint("Processing app \"%s\"" % app)
             predictedLabel = -1
             compiler, matched_with = "", ""
             # Extract static features from app
-            apk, dex, vm, app_info = extractAPKInfo(app, infoLevel=arguments.matchingdepth)
-            if not apk or not dex or not vm:
-                prettyPrint("Could not analyze app. Skipping", "warning")
-                # Add a random label to maintain the same dimensionality between (y) and (predicted)
-                #predicted.append(float(random.randint(0,1)))
-                continue
+            if arguments.hustleup == "yes":
+                if os.path.exists("%s/%s_data" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", ""))):
+                    if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", ""))):
+                        app_info = eval(open("%s/%s_data/data.txt" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", ""))).read())
+                        if len(app_info) < 1:
+                            apk, dex, vm, app_info = extractAPKInfo(app, infoLevel=arguments.matchingdepth)               
+                            if not apk or not dex or not vm:
+                                prettyPrint("Could not analyze app. Skipping", "warning")
+                                continue
+                    else:
+                        apk, dex, vm, app_info = extractAPKInfo(app, infoLevel=arguments.matchingdepth)
+                        if not apk or not dex or not vm:
+                            prettyPrint("Could not analyze app. Skipping", "warning")
+                            continue
+                else:
+                    apk, dex, vm, app_info = extractAPKInfo(app, infoLevel=arguments.matchingdepth)
+                    if not apk or not dex or not vm:
+                        prettyPrint("Could not analyze app. Skipping", "warning")
+                        continue    
+            else:
+                apk, dex, vm, app_info = extractAPKInfo(app, infoLevel=arguments.matchingdepth)
+                if not apk or not dex or not vm:
+                    prettyPrint("Could not analyze app. Skipping", "warning")
+                    continue
               
             #####################
             # 1. Quick matching #
@@ -112,8 +132,9 @@ def main():
                                 continue
 
                             # Match the two apps
-                            prettyPrint("Matching \"%s/tmp_%s/\" and \"%s/%s_data/\"" % (arguments.inputdir, app_info["package"], arguments.infodir, target_key), "debug")
-                            similarity = matchTwoAPKs("%s/tmp_%s/" % (arguments.inputdir, app_info["package"]), "%s/%s_data/" % (arguments.infodir, target_key), 1)
+                            app_dir = "%s/%s_data" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", "")) if arguments.hustleup == "yes" else "%s/tmp_%s" % (arguments.inputdir, app_info["package"])
+                            prettyPrint("Matching \"%s\" and \"%s/%s_data/\"" % (app_dir, arguments.infodir, target_key), "debug")
+                            similarity = matchTwoAPKs(app_dir, "%s/%s_data/" % (arguments.infodir, target_key), 1)
                             if similarity >= arguments.thresholds:
                                 # Retrieve more info about the match
                                 if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, target_key)):
@@ -152,75 +173,37 @@ def main():
 
                                 prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
 
-                                if compiler.lower().find("dx") != -1 or compiler.lower().find("dexmerge") != -1:
-                                    # [PAPER] If compiler(a*) == dx/dexmerge:
-                                    # [PAPER] Common theme: access to source code - scenario (5)
-                                    # [PAPER] Scenario(s): (1) App (a*) is the same benign app, (2) app (a*) is a malicious app written from scratch to resemble (a),
-                                    # [PAPER] ............ (3) app (a*) is malicious written by same author, (4) app (a*) is repackaged version of (a) whose code is available,
-                                    # [PAPER] ............ (5) app (a*) is repackaged version of (a) with forged compiler
-                                    if matched_compiler == compiler:
-                                        # [PAPER] compiler(a) = compiler(a*) (dx vs. dx)
-                                        # [PAPER] Compare code(a*) and code(a) (i.e., minus resources)
-                                        if matched_app:
-                                            # Found the APK of the matched app (This should always be true, but in case we clean up manually misclassified apps)
-                                            prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
-                                            codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
-                                            # Expecting dictionary of {"differences": {[class_name]: [different_code]}, "original": [package_name], "piggybacked": [package_name]}
-                                            if len(codeDiff) == 0:
-                                                # That means that an exception has occurred and the returned dictionary is empty (Defer to clf)
-                                                predictedLabel = -1
-                                            else:
-                                                if codeDiff["differences"] == True:
-                                                    # [PAPER] code(a*) != code(a): Assume scenarios (2)-(4) and return malicious
-                                                    # Check app version in case of update
-                                                    predictedLabel = 1
-                                                else:
-                                                    # [PAPER] code(a*) == code(a): Assume scenarion (1) or maybe same developer making a simple adjustment (e.g., to resources)
-                                                    predictedLabel = 0
-                                    else:
-                                        # [PAPER] compiler(a) == dexlib and compiler(a*) == dx/dexmerge: Defer to classifier
-                                        predictedLabel = -1
+                                # [PAPER] Compare code(a*) and code(a) (i.e., minus resources)
+                                # Expecting dictionary of {"differences": {[class_name]: [different_code]}, "original": [package_name], "piggybacked": [package_name]}
+                                codeDiff = diffAppCode(app, matched_app, True)
+                                if len(codeDiff) == 0:
+                                    predictedLabel = -1 # An exception has occurred (defer to clf)
+
+                                # [PAPER] if code(a*) == code(a)
+                                elif codeDiff["differences"] == False:
+                                    predictedLabel = 0 
+ 
+                                # [PAPER] code(a*) != code(a)
+                                # [PAPER] if comp(a) == dx && comp(a*) != dx
+                                elif matched_compiler.lower().find("dx") != -1 and compiler.lower().find("dx") == -1:
+                                    predictedLabel = 1
+                                    
+                                # [PAPER] code(a*) != code(a) && ...
+                                # [PAPER] Possible scenario(s):
+				# [PAPER]     (1) comp(a) == dx/dexmerge && comp(a*) == dx/dexmerge
+				# [PAPER]     (1) comp(a) == dexlib && comp(a*) == dx/dexmerge: 
+				# [PAPER]     (2) comp(a) == dexlib && comp(a*) == dexlib
                                 else:
-                                    # [PAPER] compiler(a*) == dexlib
-                                    if matched_compiler.find("dx") != -1:
-                                        # [PAPER] if compiler(a*) == dexlib and compiler(a) == dx/dexmerge
-                                        # [PAPER] Scenario(s): (1) App (a*) is a malicious repackaged version of app (a)
-                                        # [PAPER} ............ (2) app (a*) is the same benign app with a lazy developer editing something
-                                        prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
-                                        codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
-                                        if len(codeDiff) == 0:
-                                            # An exception has occurred = defer to classifier
-                                            predictedLabel = -1
-                                        else:
-                                            if codeDiff["differences"] == True:
-                                                # [PAPER] Original code is in "dx", repackaged in "dexlib", code is different = repackaged
-                                                predictedLabel = 1
-                                            else:
-                                                # [PAPER] code(a*) == code(a): lazy developer scenario
-                                                predictedLabel = 0
-                                    else:
-                                        # [PAPER] compiler(a*) == compiler(a) == dexlib
-                                        # [PAPER] Same app? Let us check the code
-                                        prettyPrint("Comparing the source code of \"%s\" and \"%s\"" % (app, matched_app), "debug")
-                                        codeDiff = diffAppCode(app, matched_app, True) # Run in fast mode (any difference, return True)
-                                        if len(codeDiff) == 0:
-                                            # An exception has occurred = defer to classifier
-                                            predictedLabel = -1
-                                        else:
-                                            if codeDiff["differences"] == True:
-                                                # [PAPER] compiler(a*) == compiler(a) == dexlib ^ code(a*) != code(a): defer to classifier 
-                                                predictedLabel = -1
-                                            else:
-                                                # [PAPER] compiler(a*) == compiler(a) == dexlib ^ code(a*) == code(a): assume same benign app
-                                                predictedLabel = 0
+                                    predictedLabel = -1
 
-                                # Keep track of matched app and register matching technique for statistical purposes
-                                prediction_method = "quick_matching"
 
+                prediction_method = "quick_matching"
+                prediction_confidence = 1.0
                 if predictedLabel == -1:
-                    prettyPrint("Quick matching could not assign a label. Assigning random label", "warning")
-                    predictedLabel = random.randint(0, 1)
-                    randomLabels.append(app)
+                    prettyPrint("Quick matching could not assign a label.Skipping", "warning")
+                    continue
+
+
              
             elif arguments.technique == "prob_classifier":
                 # Could not match using quick matching
@@ -232,15 +215,24 @@ def main():
                     app_static_features = eval(open(app.replace(".apk", ".static")).read())
                 else:
                     prettyPrint("Could not find pre-extracted static features for app \"%s\". Extracting" % app, "debug")
-                    app_static_features = extractStaticFeatures(app, preAPK=apk, preDEX=dex, preVM=vm)[-1]
+                    app_static_features = extractStaticFeatures(app)[-1]
+
+                if len(app_static_features) < 1:
+                    prettyPrint("Could not extract static features for app \"%s\"" % app, "warning")
+                    predictedLabel = -1
+                    continue 
 
                 classes = clf.predict_proba(app_static_features).tolist()[0]
                 prettyPrint("App \"%s\" classified as benign with P(C=0.0|app)=\"%s\" and as malicious with P(C=1.0|app)=\"%s\" " % (app, classes[0], classes[1]), "output")
                 if max(classes) >= arguments.thresholds:
                     predictedLabel = classes.index(max(classes))
                 else:
-                    prettyPrint("Probabilistic classification could not classify app. Assigning random label", "warning")
-                    predictedLabel = random.randint(0, 1)
+                    prettyPrint("Probabilistic classification could not classify app. Skipping", "warning")
+                    predictedLabel = -1
+                    continue
+
+                prediction_method = "classification"
+                prediction_confidence = max(classes)
                 
             elif arguments.technique == "deep_matching":
                 # Could not classify with confidence using naive Bayes
@@ -248,42 +240,48 @@ def main():
                 # 3. Try deep matching #
                 ########################
                 prettyPrint("Commencing deep matching")
-                matchings = matchAPKs(app, arguments.infodir, matchingDepth=arguments.matchingdepth, matchWith=10, matchingThreshold=arguments.thresholds, labeling=arguments.labeling)
-                prettyPrint("Successfully matched app \"%s\" with %s apps using threshold %s" % (app, len(matchings), arguments.thresholds))
+                useLookup = True if arguments.hustleup == "yes" else False
+                matchings = matchAPKs(app, arguments.infodir, matchingDepth=arguments.matchingdepth, matchWith=10, labeling=arguments.labeling, useLookup=useLookup)
+                prettyPrint("Successfully matched app \"%s\" with %s apps" % (app, len(matchings)))
                 malicious = 0
                 if len(matchings) > 0:
+                    # [('com.getbux.android', (0.575, 0)), .... ]
                     for m in matchings:
-                        color = "error" if m[1][1] == 1 else "debug"
-                        prettyPrint("Matched with \"%s\" with similarity %s" % (m[0], m[1][0]), color)
-                        if m[1][1] == 1:
+                        key, value = m[0], m[1]
+                        color = "error" if value[1] == 1 else "debug"
+                        prettyPrint("Matched with \"%s\" with similarity %s" % (key, value[0]), color)
+                        if value[1] == 1:
                             malicious += 1
 
                 else:
                     prettyPrint("Could not match app. Skipping", "warning")
                     continue
 
-                predictedLabel = 1 if malicious >= len(matchings)/2 else 0
+                predictedLabel = 1 if malicious >= len(matchings)/2.0 else 0
                 prediction_method = "deep_matching"
+                prediction_confidence = len(matchings)/2.0
 
             # Retrieve and append the app's original label according to the labeling scheme
             originalLabel = -1
             app_key = app[app.rfind("/")+1:].replace(".apk", "")
-            #print "[*] WE ARE HERE!! \"%s/%s.report\""  % (VT_REPORTS_DIR, app_key)
-            if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, app_key)):
-                prettyPrint("VirusTotal report found", "debug")
-                report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, app_key)).read())
-                if "positives" in report.keys():
-                    if arguments.labeling == "vt1-vt1":
-                        originalLabel = 1 if report["positives"] >= 1 else 0
-                    elif arguments.labeling == "vt50p-vt50p":
-                        originalLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
-                    elif arguments.labeling == "vt50p-vt1":
-                        if report["positives"]/float(report["total"]) >= 0.5:
-                            originalLabel = 1
-                        elif report["positives"] == 0:
-                            originalLabel = 0
-                        else:
-                            originalLabel = -1
+            if arguments.labeling == "old":
+                originalLabel = 1 if arguments.experimenttype == "malicious" else 0
+            else:
+                if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, app_key)):
+                    prettyPrint("VirusTotal report found", "debug")
+                    report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, app_key)).read())
+                    if "positives" in report.keys():
+                        if arguments.labeling == "vt1-vt1":
+                            originalLabel = 1 if report["positives"] >= 1 else 0
+                        elif arguments.labeling == "vt50p-vt50p":
+                            originalLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
+                        elif arguments.labeling == "vt50p-vt1":
+                            if report["positives"]/float(report["total"]) >= 0.5:
+                                originalLabel = 1
+                            elif report["positives"] == 0:
+                                originalLabel = 0
+                            else:
+                                originalLabel = -1
 
             if originalLabel != -1:
                 y.append(originalLabel)
@@ -293,7 +291,7 @@ def main():
                 prettyPrint("%s app \"%s\" classified as %s" % (labels[originalLabel], app[app.rfind('/')+1:], labels[predictedLabel]), "info2")
                 # Add record to performance
                 #compiler = compiler if prediction_method == "quick_matching" else "n/a"
-                #matched_with = target_key if prediction_method == "quick_matching" else "n/a"
+                matched_with = target_key if prediction_method == "quick_matching" else "n/a"
                 if compiler == "":
                     # No apps were matched to (a*), extract compiler now
                     output = scan(app, 60, "yes")
@@ -301,6 +299,10 @@ def main():
                         compiler = output["files"][0]["results"]["compiler"][0]
                     except Exception as e:
                         compiler = "n/a"
+
+            if predictedLabel != -1 and originalLabel != -1:
+                # (package_name, compiler, analysis time, original_label, predicted_label, prediction_confidence, prediction_method, matched_path)
+                performance[app] = (app_info["package"], compiler, end_time-start_time, originalLabel, predictedLabel, prediction_confidence, prediction_method, matched_with)
 
         # Calculate the accuracies according to different VT labeling schemes
         metrics_all = calculateMetrics(y, predicted)
@@ -312,12 +314,12 @@ def main():
         prettyPrint("F1 Score: %s" % metrics_all["f1score"], "output")
         # Save gathered performance metrics
         if arguments.technique == "quick_matching":
-            fileName = "Dejavu_results_solo_quick_matching_%s_%s.txt" % (arguments.experimentlabel, arguments.thresholds)
+            fileName = "Dejavu_results_solo_quick_matching_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.thresholds)
             prettyPrint("Random labels: %s out of %s" % (len(randomLabels), len(y)), "output")
         elif arguments.technique == "prob_classifier":
-            fileName = "Dejavu_results_prob_classifier_%s_%s.txt" % (arguments.experimentlabel, arguments.thresholds)
+            fileName = "Dejavu_results_prob_classifier_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.thresholds)
         elif arguments.technique == "deep_matching":
-            fileName = "Dejavu_results_deep_matching_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.matchingdepth, arguments.thresholds)
+            fileName = "Dejavu_results_deep_matching_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.matchingdepth)
 
         open(fileName.replace(' ', '_'), "w").write(str(performance))
 

@@ -2,6 +2,7 @@
 
 import random, string, os, glob, subprocess, time
 from datetime import datetime
+from zipfile import ZipFile
 import Levenshtein
 
 
@@ -13,6 +14,15 @@ def checkRoot():
         return False
     else:
         return True
+
+def getClassesDEX(input_zip):
+    input_zip=ZipFile(input_zip)
+    for name in input_zip.namelist():
+        if name.find("classes.dex") != -1:
+            #print "Found it chief: %s" % name
+            return input_zip.read(name)
+
+    return ""
 
 def stringRatio(str1, str2):
     if str1 is None or str2 is None:
@@ -28,10 +38,13 @@ def stringRatio(str1, str2):
         return float(len(str1+str2) - Levenshtein.distance(str1, str2))/len(str1+str2)
 
 def listsRatio(list1, list2):
-    if len(list1+list2) < 1:
+    if len(list1) == 0 or len(list2) == 0:
         return 0.0
-    else:
-        return float(len(list1+list2) - len(set.intersection(set(list1), set(list2)))) / len(list1+list2)
+
+    intersection = len(list(set(list1).intersection(list2)))
+    #print(list(set(list1).intersection(list2)))
+    union = (len(list1) + len(list2)) - intersection
+    return float(intersection / union)
 
 def flip(p):
     return 'YES' if random.random() < p else 'NO'
