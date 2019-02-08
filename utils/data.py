@@ -4,7 +4,7 @@ from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
 import os, random, subprocess, pickle, zipfile, shutil
-import json, exceptions, time, difflib, requests
+import json, exceptions, time, difflib, requests, gc
 import numpy
 from androguard.misc import *
 import networkx as nx
@@ -215,8 +215,11 @@ def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
                 for m in dex.get_methods_class(c):
                     apkData["methods"].append("%s->%s" % (c, m.name))
         if infoLevel >= 4:
-            callgraph = vm.get_call_graph()
-            apkData["callgraph"] = "%s/call_graph.gpickle" % destination
+            try:
+                callgraph = vm.get_call_graph()
+                apkData["callgraph"] = "%s/call_graph.gpickle" % destination
+            except Exception as e:
+                apkData["callgraph"] = None
 
         if saveInfo:
             prettyPrint("Saving extracted info to \"%s\"" % destination, "debug") 
@@ -226,7 +229,8 @@ def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
             else:
                 open("%s/data.txt" % destination, "w").write(str(apkData))
                 if infoLevel >= 4:
-                    nx.write_gpickle(callgraph, "%s/call_graph.gpickle" % destination)
+                    if apkData["callgraph"] != None:
+                        nx.write_gpickle(callgraph, "%s/call_graph.gpickle" % destination)
 
     except exceptions.RuntimeError as re:
         prettyPrintError(re)
@@ -437,6 +441,7 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.67, ma
                 if os.path.exists("%s/%s_data" % (infoDir, sourceKey)):
                     sourceInfo = eval(open("%s/%s_data/data.txt" % (infoDir, sourceKey)).read())
                 else:
+                    prettyPrint("No lookup info found. Extracting app info", "warning")
                     sourceInfo = extractAPKInfo(sourceAPK, matchingDepth)[-1]
             else:          
                 sourceInfo = extractAPKInfo(sourceAPK, matchingDepth)[-1]
@@ -464,10 +469,6 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.67, ma
                 # Load pre-extracted target app information
                 try:
                     targetInfo = eval(open("%s/data.txt" % targetAPK).read())
-                    targetInfo["callgraph"] = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK) if os.path.exists("%s/call_graph.gpickle" % targetAPK) and matchingDepth >= 4 else None
-                except exceptions.EOFError as e:
-                    prettyPrint("Could not read call graph. Skipping", "warning")
-                    continue
                 except Exception as e:
                     prettyPrint("Could not load target info. Skipping", "warning")
                     continue
@@ -534,9 +535,19 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.67, ma
                         similarities.append(listsRatio(sourceInfo["methods"], targetInfo["methods"]))
 
                 if matchingDepth >= 4:
-                    if "callgraph" in sourceInfo.keys() and "callgraph" in targetInfo.keys():
-                       if os.path.exists(sourceInfo["callgraph"]) and os.path.exists(targetInfo["callgraph"]):
-                           isomorphic = nx.algorithms.is_isomorphic(sourceInfo["callgraph"], targetInfo["callgraph"])
+                       if os.path.exists("%s/%s_data/call_graph.gpickle" % (infoDir, sourceKey)) and os.path.exists("%s/call_graph.gpickle" % targetAPK):
+                           try:
+                               prettyPrint("Loading source graph from \"%s/%s_data/call_graph.gpickle\"" % (infoDir, sourceKey), "debug")
+                               sourceGraph = nx.read_gpickle("%s/%s_data/call_graph.gpickle" % (infoDir, sourceKey))
+                               prettyPrint("Loading target graph from \"%s/call_graph.gpickle\"" % targetAPK, "debug")
+                               targetGraph = nx.read_gpickle("%s/call_graph.gpickle" % targetAPK)
+                           except exceptions.EOFError as e:
+                                   prettyPrint("Could not read call source or target graphs. Skipping", "warning")
+                                   continue
+                           if fastSearch:
+                               isomorphic = nx.algorithms.could_be_isomorphic(sourceGraph, targetGraph)
+                           else:
+                               isomorphic = nx.algorithms.is_isomorphic(sourceGraph, targetGraph)
                            if isomorphic:
                                similarities.append(1.0)
                            else:
@@ -561,6 +572,10 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.67, ma
             else:
                 similarity = 0.0
             prettyPrint("Similarity score: %s" % similarity)
+            # Delete targetInfo to free memory?
+            prettyPrint("Releasing object and invoking Garbage Collector", "debug")
+            targetGraph = None
+            gc.collect()
 
             if similarity >= matchingThreshold:
                 prettyPrint("Got a match between source \"%s\" and app \"%s\", with score %s" % (sourceAPK[sourceAPK.rfind("/")+1:].replace(".apk", ""), targetAPK[targetAPK.rfind("/")+1:].replace(".apk", ""), similarity), "output")

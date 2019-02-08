@@ -12,8 +12,7 @@ import argparse, os, glob, random, sys, operator, logging, shutil, time, signal
 from exceptions import KeyError
 
 def defineArguments():
-    parser = argparse.ArgumentParser(prog="dejavu_tool_solo.py", description="Runs experiments using different labeling schemes on individual techniques")
-    parser.add_argument("-n", "--technique", help="The technique to use in this experiment", required=True, choices=["quick_matching", "prob_classifier", "deep_matching"])
+    parser = argparse.ArgumentParser(prog="dejavu_tool_mkIV.py", description="Runs experiments using a sequential ensemble of dejavu's detection methods")
     parser.add_argument("-x", "--inputdir", help="The directory containing the APKs", required=True)
     parser.add_argument("-c", "--classifier", help="The path to the classifier trained using AMD+Gplay traces", required=False)
     parser.add_argument("-r", "--clusters", help="The path to the file containing the benign apps clusters", required=False)
@@ -21,11 +20,12 @@ def defineArguments():
     parser.add_argument("-a", "--apkdir", help="The directory containing the APK's of the benign apps", required=True)
     parser.add_argument("-f", "--featuretype", help="The type of features to consider", required=False, default="static", choices=["static", "dynamic"])
     parser.add_argument("-e", "--matchingdepth", help="The rigorosity of app matching", type=int, required=False, default=2, choices=[1,2,3,4])
-    parser.add_argument("-t", "--thresholds", help="The thresholds used during the experiments, depicts: (1) percentage beyond which apps are considered similar, and (2) the classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
+    parser.add_argument("-t", "--matchingthreshold", help="The threshold beyond which apps are considered similar", required=False, default=0.8, type=float)
+    parser.add_argument("-d", "--classthreshold", help="The classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
     parser.add_argument("-l", "--experimentlabel", help="Give a label to the experiment currently run by the tool", required=False, default="Dejavu experiment")
     parser.add_argument("-y", "--experimenttype", help="Whether the experiment is performed on malicious or benign datasets", required=False, default="malicious", choices=["malicious", "benign"])
     parser.add_argument("-b", "--labeling", help="The type of labeling scheme to employ in deeming apps as [malicious-benign]", required=False, default="vt1-vt1", choices=["old", "vt1-vt1", "vt50p-vt50p", "vt50p-vt1"])
-    parser.add_argument("-s", "--hustleup", help="Whether to use lookup structs to speed up the experiments", required=False, default="yes", choices=["yes", "no"])
+    parser.add_argument("-s", "--hustleup", help="Whether to use lookup structs to speed up the experiments", required=False, default="no", choices=["yes", "no"])
     parser.add_argument("-u", "--cleanup", help="Whether to remove the directories containing data about the analyzed and tested apps", required=False, default="no", choices=["yes", "no"])
     return parser
 
@@ -46,16 +46,14 @@ def main():
         prettyPrint("Successfully retrieved %s apps" % (len(testAPKs)))
 
         # Load classifier
-        if arguments.technique == "prob_classifier":
-            prettyPrint("Loading the classifier under \"%s\"" % arguments.classifier)
-            clf = pickle.loads(open(arguments.classifier).read())
+        prettyPrint("Loading the classifier under \"%s\"" % arguments.classifier)
+        clf = pickle.loads(open(arguments.classifier).read())
 
         # Load necessary lookup structures
-        if arguments.technique == "quick_matching":
-            prettyPrint("Loading package name clusters")
-            clusters = eval(open(arguments.clusters).read())
-            prettyPrint("Loading package name lookup dictionary")
-            lookup = eval(open(arguments.clusters.replace("clusters", "pkgToHash")).read())
+        prettyPrint("Loading package name clusters")
+        clusters = eval(open(arguments.clusters).read())
+        prettyPrint("Loading package name lookup dictionary")
+        lookup = eval(open(arguments.clusters.replace("clusters", "pkgToHash")).read())
         
 
         # Keeping track of performance metrics 
@@ -109,105 +107,99 @@ def main():
             #####################
             # 1. Quick matching #
             #####################
-            if arguments.technique == "quick_matching":
-                matchings = []
-                randomLabels = []
-                prettyPrint("Initializaing Quick matching")
-                for cluster_name in clusters:
-                    matchings.append((cluster_name, distance(app_info["package"], cluster_name)))
+            matchings = []
+            randomLabels = []
+            prettyPrint("Initializaing Quick matching")
+            for cluster_name in clusters:
+                matchings.append((cluster_name, distance(app_info["package"], cluster_name)))
 
-                matchings.sort(key=operator.itemgetter(1))
-                for m in matchings:
-                    for name in clusters[m[0]]:
-                        if predictedLabel != -1:
-                            prettyPrint("Label already assigned. Skipping", "debug")
+            matchings.sort(key=operator.itemgetter(1))
+            for m in matchings:
+                for name in clusters[m[0]]:
+                    if predictedLabel != -1:
+                        prettyPrint("Label already assigned. Skipping", "debug")
+                        continue
+                    # Compute the distance between the current app's package name and the current cluster's center
+                    score = stringRatio(app_info["package"], name)
+                    if score >= arguments.matchingthreshold:
+                        # Distance is greater than or equal matching threshold (d_match)
+                        target_key = lookup[name]
+                        prettyPrint("Match with \"%s\" of %s. Performing level 1 matching." % (target_key, score), "output")
+                        if not os.path.exists("%s/%s_data" % (arguments.infodir, target_key)):
+                            prettyPrint("Matched app has not been analyzed. Skipping", "warning")
                             continue
-                        # Compute the distance between the current app's package name and the current cluster's center
-                        score = stringRatio(app_info["package"], name)
-                        if score >= arguments.thresholds:
-                            # Distance is greater than or equal matching threshold (d_match)
-                            target_key = lookup[name]
-                            prettyPrint("Match with \"%s\" of %s. Performing level 1 matching." % (target_key, score), "output")
-                            if not os.path.exists("%s/%s_data" % (arguments.infodir, target_key)):
-                                prettyPrint("Matched app has not been analyzed. Skipping", "warning")
-                                continue
 
-                            # Match the two apps
-                            app_dir = "%s/%s_data" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", "")) if arguments.hustleup == "yes" else "%s/tmp_%s" % (arguments.inputdir, app_info["package"])
-                            prettyPrint("Matching \"%s\" and \"%s/%s_data/\"" % (app_dir, arguments.infodir, target_key), "debug")
-                            similarity = matchTwoAPKs(app_dir, "%s/%s_data/" % (arguments.infodir, target_key), 1)
-                            if similarity >= arguments.thresholds:
-                                # Retrieve more info about the match
-                                if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, target_key)):
-                                    matched_info = eval(open("%s/%s_data/data.txt" % (arguments.infodir, target_key)).read())
-                                # If still match, extract APKID info
-                                prettyPrint("Fingerprinting \"%s\"'s compiler using APKiD" % app)
-                                output = scan(app, 60, "yes")
+                        # Match the two apps
+                        app_dir = "%s/%s_data" % (arguments.infodir, app[app.rfind("/")+1:].replace(".apk", "")) if arguments.hustleup == "yes" else "%s/tmp_%s" % (arguments.inputdir, app_info["package"])
+                        prettyPrint("Matching \"%s\" and \"%s/%s_data/\"" % (app_dir, arguments.infodir, target_key), "debug")
+                        similarity = matchTwoAPKs(app_dir, "%s/%s_data/" % (arguments.infodir, target_key), 1)
+                        if similarity >= arguments.matchingthreshold:
+                            # Retrieve more info about the match
+                            if os.path.exists("%s/%s_data/data.txt" % (arguments.infodir, target_key)):
+                                matched_info = eval(open("%s/%s_data/data.txt" % (arguments.infodir, target_key)).read())
+                            # If still match, extract APKID info
+                            prettyPrint("Fingerprinting \"%s\"'s compiler using APKiD" % app)
+                            output = scan(app, 60, "yes")
+                            try:
+                                compiler = output["files"][0]["results"]["compiler"][0]
+                            except Exception as e:
+                                compiler = "n/a"
+
+                            prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
+
+                            # [PAPER] At this point, we matched original app (a) to test app (a*) (i.e., match(a, a*) >= t_match) 
+                            # Figure out where the matched app resides
+                            if os.path.exists("%s/GPlay/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/GPlay/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Original/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Original/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)
+                            elif os.path.exists("%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)):
+                                matched_app = "%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)
+                            else:
+                                matched_app = None
+
+                            # Get compiler of the matched app
+                            if matched_app != None:
+                                output = scan(matched_app, 60, "yes") 
                                 try:
-                                    compiler = output["files"][0]["results"]["compiler"][0]
+                                    matched_compiler = output["files"][0]["results"]["compiler"][0]
                                 except Exception as e:
-                                    compiler = "n/a"
-                                prettyPrint("App: \"%s\" was compiled using \"%s\"" % (app, compiler), "output")
-
-                                # [PAPER] At this point, we matched original app (a) to test app (a*) (i.e., match(a, a*) >= t_match) 
-                                # Figure out where the matched app resides
-                                if os.path.exists("%s/GPlay/%s.apk" % (arguments.apkdir, target_key)):
-                                    matched_app = "%s/GPlay/%s.apk" % (arguments.apkdir, target_key)
-                                elif os.path.exists("%s/Original/%s.apk" % (arguments.apkdir, target_key)):
-                                    matched_app = "%s/Original/%s.apk" % (arguments.apkdir, target_key)
-                                elif os.path.exists("%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)):
-                                    matched_app = "%s/Piggybacked/%s.apk" % (arguments.apkdir, target_key)
-                                elif os.path.exists("%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)):
-                                    matched_app = "%s/Malgenome/%s.apk" % (arguments.apkdir, target_key)
-                                else:
-                                    matched_app = None
-
-                                # Get compiler of the matched app
-                                if matched_app != None:
-                                    output = scan(matched_app, 60, "yes") 
-                                    try:
-                                        matched_compiler = output["files"][0]["results"]["compiler"][0]
-                                    except Exception as e:
-                                        matched_compiler = "n/a"
-                                else:
                                     matched_compiler = "n/a"
+                            else:
+                                matched_compiler = "n/a"
 
-                                prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
+                            prettyPrint("Compiler of matched app is \"%s\"" % matched_compiler, "debug")
 
-                                # [PAPER] Compare code(a*) and code(a) (i.e., minus resources)
-                                # Expecting dictionary of {"differences": {[class_name]: [different_code]}, "original": [package_name], "piggybacked": [package_name]}
-                                codeDiff = diffAppCode(app, matched_app, True)
-                                if len(codeDiff) == 0:
-                                    predictedLabel = -1 # An exception has occurred (defer to clf)
-
-                                # [PAPER] if code(a*) == code(a)
-                                elif codeDiff["differences"] == False:
-                                    predictedLabel = 0 
- 
-                                # [PAPER] code(a*) != code(a)
-                                # [PAPER] if comp(a) == dx && comp(a*) != dx
-                                elif matched_compiler.lower().find("dx") != -1 and compiler.lower().find("dx") == -1:
-                                    predictedLabel = 1
+                            # [PAPER] Compare code(a*) and code(a) (i.e., minus resources)
+                            # Expecting dictionary of {"differences": {[class_name]: [different_code]}, "original": [package_name], "piggybacked": [package_name]}
+                            codeDiff = diffAppCode(app, matched_app, True)
+                            if len(codeDiff) == 0:
+                                predictedLabel = -1 # An exception has occurred (defer to clf)
+                            # [PAPER] if code(a*) == code(a)
+                            elif codeDiff["differences"] == False:
+                                predictedLabel = 0 
+                            # [PAPER] code(a*) != code(a)
+                            # [PAPER] if comp(a) == dx && comp(a*) != dx
+                            elif matched_compiler.lower().find("dx") != -1 and compiler.lower().find("dx") == -1:
+                                predictedLabel = 1
                                     
-                                # [PAPER] code(a*) != code(a) && ...
-                                # [PAPER] Possible scenario(s):
-				# [PAPER]     (1) comp(a) == dx/dexmerge && comp(a*) == dx/dexmerge
-				# [PAPER]     (1) comp(a) == dexlib && comp(a*) == dx/dexmerge: 
-				# [PAPER]     (2) comp(a) == dexlib && comp(a*) == dexlib
-                                else:
-                                    predictedLabel = -1
+                            # [PAPER] code(a*) != code(a) && ...
+                            # [PAPER] Possible scenario(s):
+			    # [PAPER]     (1) comp(a) == dx/dexmerge && comp(a*) == dx/dexmerge
+			    # [PAPER]     (1) comp(a) == dexlib && comp(a*) == dx/dexmerge: 
+			    # [PAPER]     (2) comp(a) == dexlib && comp(a*) == dexlib
+                            else:
+                                predictedLabel = -1
 
 
-                prediction_method = "quick_matching"
-                prediction_confidence = 1.0
-                if predictedLabel == -1:
-                    prettyPrint("Quick matching could not assign a label.Skipping", "warning")
-                    counter += 1
-                    continue
-
-
+            prediction_method = "quick_matching"
+            prediction_confidence = 1.0
+            if predictedLabel == -1:
+                prettyPrint("Quick matching could not assign a label.Skipping", "warning")
              
-            elif arguments.technique == "prob_classifier":
+            if predictedLabel == -1:
                 # Could not match using quick matching
                 ###################################
                 # 2. Probabilistic classification #
@@ -222,22 +214,20 @@ def main():
                 if len(app_static_features) < 1:
                     prettyPrint("Could not extract static features for app \"%s\"" % app, "warning")
                     predictedLabel = -1
-                    continue 
 
                 classes = clf.predict_proba(app_static_features).tolist()[0]
                 prettyPrint("App \"%s\" classified as benign with P(C=0.0|app)=\"%s\" and as malicious with P(C=1.0|app)=\"%s\" " % (app, classes[0], classes[1]), "output")
-                if max(classes) >= arguments.thresholds:
+                if max(classes) >= arguments.classthreshold:
                     predictedLabel = classes.index(max(classes))
                 else:
                     prettyPrint("Probabilistic classification could not classify app. Skipping", "warning")
                     predictedLabel = -1
                     counter += 1
-                    continue
 
                 prediction_method = "classification"
                 prediction_confidence = max(classes)
                 
-            elif arguments.technique == "deep_matching":
+            if predictedLabel == -1:
                 # Could not classify with confidence using naive Bayes
                 ########################
                 # 3. Try deep matching #
@@ -318,14 +308,7 @@ def main():
         prettyPrint("Specificity: %s" % metrics_all["specificity"], "output")
         prettyPrint("F1 Score: %s" % metrics_all["f1score"], "output")
         # Save gathered performance metrics
-        if arguments.technique == "quick_matching":
-            fileName = "Dejavu_results_solo_quick_matching_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.thresholds)
-            prettyPrint("Random labels: %s out of %s" % (len(randomLabels), len(y)), "output")
-        elif arguments.technique == "prob_classifier":
-            fileName = "Dejavu_results_prob_classifier_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.thresholds)
-        elif arguments.technique == "deep_matching":
-            fileName = "Dejavu_results_deep_matching_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.matchingdepth)
-
+        fileName = "Dejavu_results_ensemble_%s_%s_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.matchingthreshold, arguments.classthreshold, arguments.matchingdepth)
         open(fileName.replace(' ', '_'), "w").write(str(performance))
 
         # Clean up?         
