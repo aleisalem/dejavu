@@ -90,7 +90,7 @@ def main():
         plt.xticks(x, Xmal)#, rotation=45)
         if arguments.method == "quick_matching":
             xlabel = "Matching Threshold"
-        elif arguments.method == "prob_classification":
+        elif arguments.method == "prob_classifier":
             xlabel = "Classification Threshold"
         else:
             xlabel = "Matching Depth"
