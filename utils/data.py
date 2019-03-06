@@ -3,6 +3,7 @@
 from dejavu.conf.config import *
 from dejavu.utils.graphics import *
 from dejavu.utils.misc import *
+from dejavu.shared.constants import argumentsRegex, allVirusTotalKeys
 import os, random, subprocess, pickle, zipfile, shutil
 import json, exceptions, time, difflib, requests, gc
 import numpy
@@ -12,6 +13,62 @@ from skimage.measure import compare_ssim
 import imutils
 import cv2
 
+
+def compareVirusTotalBehavior(behavior1, behavior2):
+    """
+    Compares two dictionaries depicting the runtime behaviors of two apps as reported by VirusTotal
+    :param behavior1: The runtime behavior information of the first app
+    :type behavior1: dict
+    :param behavior2: The runtime behavior information of the second app
+    :type behavior2: dict
+    :return: A float depicting the similarity between the behaviors (0.0 = no similarity, 1.0 = exact app)
+    """
+    try:
+        # Find the similar keys
+        commonKeys = list(set(behavior1.keys()).intersection(set(behavior2.keys())))
+        if len(commonKeys) < 1:
+            prettyPrint("Could not find any common keys", "warning")
+            return 0.0
+
+
+        # Iterate over lists and compare them
+        similarities = []
+        # Add zeros for the uncommon keys in either behaviors
+        similarities += [0.0] * (len(behavior1) + len(behavior2) - len(commonKeys))
+        for key in commonKeys:
+            if not key == "sandbox-version":
+                if key == "dynamically_called_methods":
+                    # Flatten the lists of methods
+                    methods1, methods2 = [], []
+                    for method in behavior1["dynamically_called_methods"]:
+                        m = method["method"]
+                        args = ",".join(method["args"]) if "args" in method.keys() else ""
+                        methods1.append("%s(%s)" % (m, args))
+                    for method in behavior2["dynamically_called_methods"]:
+                        m = method["method"]
+                        args = ",".join(method["args"]) if "args" in method.keys() else ""
+                        methods2.append("%s(%s)" % (m, args))
+                    # Compare the lists
+                    similarities.append(listsRatio(methods1, methods2))
+                elif key == "contacted_urls":
+                    # Flatten the lists of urls
+                    urls1 = [url["url"] for url in behavior1["contacted_urls"]]
+                    urls2 = [url["url"] for url in behavior2["contacted_urls"]]
+                    # Compare the lists
+                    similarities.append(listsRatio(urls1, urls2))
+                else: 
+                    # Add similarity to list of similarities
+                    similarities.append(listsRatio(behavior1[key], behavior2[key]))
+
+        # Calculate the final score
+        similarity = 0.0 if len(similarities) == 0 else sum(similarities)/float(len(similarities))
+
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0
+
+
+    return similarity
 
 def diffAppCode(app1, app2, fastMode=False):
     """
@@ -169,6 +226,7 @@ def diffTraces(traceX, traceY, ignoreArguments=True):
 
     return diffs
 
+
 def extractAPKInfo(targetAPK, infoLevel=1, saveInfo=True):
     """
     Statically analyzes APK and extracts information from it
@@ -264,6 +322,46 @@ def getPackageNameFromAPK(apkPath):
         return ""
 
     return app_pkg
+
+def getVTLabel(VTReportKey, labeling="vt1-vt1"):
+    """
+    Figures out the label of an app according to its VirusTotal and the passed label
+    :param VTReportKey: The key used to look for the report (i.e., the SHA256 hash of the app)
+    :type VTReportKey: str
+    :param labeling: 
+    :type labeling:
+    :return: an int depicting the class of the app according to the adopted labeling scheme (1 for malicious, 0 for benign, -1 for unknown)
+    """
+    try:
+        # Retrieve the APK's label according to a labeling scheme
+        targetLabel = -1    
+        if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, VTReportKey)):
+            report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, VTReportKey)).read())
+            #prettyPrint("VirusTotal report \"%s.report\" found" % targetKey, "debug")
+            if "positives" in report.keys():
+                if labeling == "old":
+                    if "additional_info" in report.keys():
+                        if "positives_delta" in report["additional_info"].keys():
+                            targetLabel = 1 if report["positives"] - report["additional_info"]["positives_delta"] >= 1 else 0
+
+                elif labeling == "vt1-vt1":
+                    targetLabel = 1 if report["positives"] >= 1 else 0
+                elif labeling == "vt50p-vt50p":
+                    targetLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
+                elif labeling == "vt50p-vt1":
+                    if report["positives"]/float(report["total"]) >= 0.5:
+                        targetLabel = 1
+                    elif report["positives"] == 0:
+                        targetLabel = 0
+                    else:
+                        targetLabel = -1
+
+    except Exception as e:
+        prettyPrintError(e)
+        return -1
+
+    return targetLabel
+
 
 def getVTReport(VTAPIKey, VTHash, allinfo="true"):
     """
@@ -597,6 +695,225 @@ def matchAPKs(sourceAPK, targetAPKs, matchingDepth=1, matchingThreshold=0.67, ma
 
     return sortDictByValue(matchings, True)
 
+def matchAppsDynamic(sourceAPK, dataSource="droidmon", fastSearch=True, includeArguments=True, matchingThreshold=0.67, matchWith=10, labeling="vt1-vt1"):
+    """
+    Matches apps according to similarities between their traces or runtime behaviors
+    :param sourceAPK: The path to the source APK (the original app you wish to match)
+    :type sourceAPK: str
+    :param infoDir: The path to the directory containing target traces (against which you wish to match)
+    :type infoDir: str
+    :param dataSource: The source of runtime behavior to compare (options: "droidmon", "virustotal")
+    :type dataSource: str
+    :param fastSearch: Whether to return matchings one maximum number of matches [matchWith] is reached
+    :type fastSearch: boolean
+    :param includeArguments: Whether to include method arguments in droidmon traces
+    :type includeArguments: boolean
+    :param matchingThreshold: A similarity percentage above which apps are considered similar
+    :type matchingThreshold: float
+    :param matchWith: The number of matchings to return (default: 1)
+    :type matchWith: int
+    :param fastSearch: Whether to return matchings one maximum number of matches [matchWith] is reached
+    :type fastSearch: boolean
+    :param labeling: The labeling scheme adopted to label APK's as malicious and benign
+    :type labeling: str
+    :return: A list of tuples (str, (float, float)) depicting the matched app, the similarity measure and the matched app's label
+    """
+    try:
+        # Get the log/behavior of the source APK
+        sourceKey = sourceAPK[sourceAPK.rfind("/")+1:].replace(".apk", "")
+        if dataSource == "droidmon":
+            sourceLogs = glob.glob("%s/%s*.filtered" % (LOGS_DIR, sourceKey))
+            if len(sourceLogs) < 1:
+                prettyPrint("Could not find \"Droidmon\" logs for app \"%s\"" % sourceKey, "warning")
+                return [] 
+                
+            sourceLog = sourceLogs[random.randint(0, len(sourceLogs)-1)]
+            for log in sourceLogs:
+                if os.path.getsize(log) > os.path.getsize(sourceLog):
+                     sourceLog = log
+            
+            sourceBehavior = parseDroidmonLog(sourceLog, includeArguments=includeArguments)
+
+        else:
+             if not os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, sourceKey)):
+                 prettyPrint("Could not find a \"VirusTotal\" report for \"%s\"" % sourceKey, "warning")
+                 return []
+                 
+             report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, sourceKey)).read())
+             if not "additional_info" in report.keys():
+                 prettyPrint("Could not find the key \"additional_info\" in the report", "warning")
+                 return []
+
+             if not "android-behaviour" in report["additional_info"].keys():
+                  prettyPrint("Could not find the key \"android-behaviour\" in the report", "warning")
+                  return []
+
+             sourceBehavior = report["additional_info"]["android-behaviour"]
+
+        # Get the target apps
+        if dataSource == "droidmon":
+            targetApps = glob.glob("%s/*.filtered" % LOGS_DIR)
+        elif dataSource == "virustotal":
+            targetApps = glob.glob("%s/*.report" % VT_REPORTS_DIR)
+        
+        if len(targetApps) < 1:
+            prettyPrint("Could not find \"Droidmon\" logs or \"VirusTotal\" reports to match apps", "warning")
+            return []
+            
+        matchings = []
+        similarity = 0.0
+        for target in targetApps:
+            # Load targetBehavior
+            if dataSource == "droidmon":
+                targetBehavior = parseDroidmonLog(target, includeArguments=includeArguments)
+            else:
+                report = eval(open(target).read())
+                try:
+                    targetBehavior = report["additional_info"]["android-behaviour"]
+                except Exception as e:
+                    #prettyPrint("Could not load \"VirusTotal\" runtime behavior for \"%s\". Skipping." % target, "warning")
+                    continue
+            
+            # Retrieve the APK's label according to a labeling scheme
+            targetLabel = -1
+            tmp = target[target.rfind("/")+1:].replace(".filtered", "")
+            targetKey = tmp[:tmp.find("_")] if dataSource == "droidmon" else tmp.replace(".report", "")
+            if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, targetKey)):
+                report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, targetKey)).read())
+                #prettyPrint("VirusTotal report \"%s.report\" found" % targetKey, "debug")
+                if "positives" in report.keys():
+                    if labeling == "old":
+                        if "additional_info" in report.keys():
+                            if "positives_delta" in report["additional_info"].keys():
+                                targetLabel = 1 if report["positives"] - report["additional_info"]["positives_delta"] >= 1 else 0
+                        else:
+                            continue
+                    if labeling == "vt1-vt1":
+                        targetLabel = 1 if report["positives"] >= 1 else 0
+                    elif labeling == "vt50p-vt50p":
+                        targetLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
+                    elif labeling == "vt50p-vt1":
+                        if report["positives"]/float(report["total"]) >= 0.5:
+                            targetLabel = 1
+                        elif report["positives"] == 0:
+                            targetLabel = 0
+                        else:
+                            targetLabel = -1
+
+                if targetLabel == -1:
+                    prettyPrint("Could not label \"%s\" under the \"%s\" scheme" % (targetKey, labeling), "warning")
+                    continue
+                # Start the comparison
+                if dataSource == "droidmon":
+                    # Compare trace
+                    similarity = tracesRatio(sourceBehavior, targetBehavior) 
+                else:
+                    # Compare different lists in the "android-behaviour"
+                    similarity = compareVirusTotalBehavior(sourceBehavior, targetBehavior)
+                    
+                #prettyPrint("Similarity score: %s" % similarity, "debug")
+
+                if similarity >= matchingThreshold:
+                    prettyPrint("Got a match between source \"%s\" and app \"%s\", with score %s" % (sourceKey, targetKey, similarity), "output")
+                    matchings.append((targetKey, (similarity, targetLabel)))
+
+                if (fastSearch and len(matchings) >= matchWith):
+                    # Return what we've got so far
+                    if len(matchings) >= matchWith:
+                        return matchings[:matchWith]
+                    else:
+                        return matchings
+
+    except Exception as e:
+        prettyPrintError(e)
+        return []
+
+    return matchings
+
+def matchTrace(sourceApp, compareTraces=False, includeArguments=False, matchingThreshold=0.50, labeling="vt1-vt1"):
+    """
+    Matches a droidmon trace to other droidmon traces in dejavu's repository organized as clusters according to their lengths
+    :param sourceApp: The path to the APK whose trace we wish to match
+    :type sourceApp: str
+    :param compareTraces: Whether to compare traces or settle for labels of traces in a cluster
+    :type compareTraces: boolean
+    :param includeArguments: Whether to include method arguments in droidmon traces
+    :type includeArguments: boolean
+    :param matchingThreshold: A similarity percentage above which apps are considered similar
+    :type matchingThreshold: float
+    :param labeling: The labeling scheme adopted to label APK's as malicious and benign
+    :type labeling: str
+    :return: A list of tuples (str, (float, float)) depicting the matched app, the similarity measure and the matched app's label
+    """
+    try:
+       matchings = []
+       sourceKey = sourceApp[sourceApp.rfind("/")+1:].replace(".apk", "")
+       if not os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, sourceKey)):
+           prettyPrint("Could not find \"VirusTotal\" report for app \"%s\"" % sourceApp, "warning")
+           return []
+       elif len(glob.glob("%s/Test/%s*.filtered" % (LOGS_DIR, sourceKey))) < 1:
+           prettyPrint("Could not find any \"droidmon\" logs for app \"%s\"" % sourceApp, "warning")
+           return []
+
+       # Retrieve source logs
+       sourceLogs = [parseDroidmonLog(log, includeArguments=includeArguments) for log in glob.glob("%s/Test/%s*.filtered" % (LOGS_DIR, sourceKey))]
+       sourceTrace = max(sourceLogs)
+       sourceLabel = getVTLabel(sourceKey, labeling)
+       # Retrieve the corresponding cluster of logs
+       if len(sourceTrace) < 10:
+           clusterFile = "%s/dejavu_traces_length_10.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 10 and len(sourceTrace) < 25:
+           clusterFile = "%s/dejavu_traces_length_1025.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 25 and len(sourceTrace) < 50:
+           clusterFile = "%s/dejavu_traces_length_2550.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 50 and len(sourceTrace) < 75:
+           clusterFile = "%s/dejavu_traces_length_5075.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 75 and len(sourceTrace) < 100:
+           clusterFile = "%s/dejavu_traces_length_75100.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 100 and len(sourceTrace) < 125:
+           clusterFile = "%s/dejavu_traces_length_100125.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 125 and len(sourceTrace) < 150:
+           clusterFile = "%s/dejavu_traces_length_125150.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 150 and len(sourceTrace) < 175:
+           clusterFile = "%s/dejavu_traces_length_150175.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 175 and len(sourceTrace) < 200:
+           clusterFile = "%s/dejavu_traces_length_175200.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 200:
+           clusterFile = "%s/dejavu_traces_length_200.txt" % LOOKUP_STRUCTS
+       
+       # Load the traces in the designated cluster
+       prettyPrint("Loading cluster file \"%s\"" % clusterFile)
+       targetLogs = eval(open(clusterFile).read())
+       if compareTraces == False:
+           prettyPrint("Basing matching on labels", "debug")
+           # Just retrieve the labels of the logs in the cluster
+           for log in targetLogs:
+               tmp = log[log.rfind("/")+1:].replace(".filtered", "")
+               targetKey = tmp[:tmp.find("_")]
+               targetLabel = getVTLabel(targetKey, labeling)
+               if targetLabel != -1:
+                   matchings.append((targetKey, (0.0, targetLabel)))
+       else:
+           prettyPrint("Matching \"%s\" with %s traces" % (sourceKey, len(targetLogs)), "debug")
+           for log in targetLogs:
+               tmp = log[log.rfind("/")+1:].replace(".filtered", "")
+               targetKey = tmp[:tmp.find("_")]
+               if not os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, targetKey)):
+                   prettyPrint("Could not find a \"VirusTotal\" report for \"%s\"" % targetKey, "warning")
+                   continue
+   
+               targetLabel = getVTLabel(targetKey, labeling)
+               targetTrace = parseDroidmonLog(log, includeArguments=includeArguments)
+               similarity = tracesRatio(targetTrace, sourceTrace)
+               if similarity >= matchingThreshold:
+                   prettyPrint("Got a match between \"%s\" and \"%s\" of %s" % (targetKey, sourceKey, similarity), "output")
+                   matchings.append((targetKey, (similarity, targetLabel)))
+
+    except Exception as e:
+        prettyPrintError(e)
+        return []
+
+    return matchings
 
 def matchTwoAPKs(sourceDir, targetDir, matchingDepth=1, useSimiDroid=False):
     """
@@ -685,6 +1002,131 @@ def matchTwoAPKs(sourceDir, targetDir, matchingDepth=1, useSimiDroid=False):
 
     return similarity
 
+def parseDroidmonLog(logPath, abstractArguments=False, includeArguments=True, mode="classes"):
+    """
+    Parses the entries in Droidmon-generated logs
+    :param logPath: The path to the JSON-log generated by Droidmon
+    :type logPath: str
+    :param abstractArguments: Whether to abstract the arguments of methods (e.g., to "string", "integer", "hash", etc.)
+    :type abstractArguments: bool
+    :param includeArguments: Whether to include the method argument in the trace
+    :type includeArguments: bool
+    :param mode: The format of elements in the trace (e.g., class.method(args) vs. method(args))
+    :type mode: str
+    :return: A list depicting the trace found in the log
+    """
+    try:
+        # Parse the droidmon log
+        if not os.path.exists(logPath):
+            prettyPrint("Unable to locate \"%s\"" % logPath, "warning")
+            return []
+            
+        lines = open(logPath).read().split('\n')
+        prettyPrint("Successfully retrieved %s lines from log" % len(lines), "debug")
+        droidmonLines = [l for l in lines if l.lower().find("droidmon-apimonitor-") != -1]
+        # Generate trace from lines
+        trace = []
+        for line in droidmonLines:
+            tmp = line[line.find("{"):].replace('\n','').replace('\r','')
+            # Extract class and method
+            c, m = "", ""
+            pattern = "class\":\""
+            index = tmp.find(pattern)
+            c = tmp[index+len(pattern):tmp.find("\"", index+len(pattern))]
+            pattern = "method\":\""
+            index = tmp.find(pattern)
+            m = tmp[index+len(pattern):tmp.find("\"", index+len(pattern))]
+            if includeArguments:
+                pattern = "args\":["
+                index = tmp.find(pattern)
+                a = tmp[index+len(pattern):tmp.find(']', index+len(pattern))]
+            # Prepare to add args
+            args = "" if not includeArguments else a
+            # Abstract arguments
+            if abstractArguments == True:
+                for regex in argumentsRegex:
+                    for f in argumentsRegex[regex].findall(args):
+                        args.replace(f, regex)
+            # Append to trace
+            if mode == "methods":
+                trace.append("%s(%s)" % (m, args))
+            elif mode == "classes":
+                trace.append("%s.%s(%s)" % (c, m, args))
+                
+    except Exception as e:
+        prettyPrintError(e)
+        return []
+        
+    return trace
+
+def prepareHMMData(includeArguments=True, labeling="vt1-vt1"):
+    """
+    Retrieves and parses droidmon logs and their actions to train a HMM
+    :param includeArguments: Whether to include method arguments in the traces
+    :type includeArguments: bool
+    :param labeling: The labeling scheme to adopt in labeling the traces (default: vt1-vt1)
+    :type labeling: str
+    :return: Two lists depicting (1) traces, and (2) actions
+    """
+    try:
+        traces, actions = [], []#, labels = [], [], []
+        # Retrieve traces
+        allLogs = glob.glob("%s/*.filtered" % LOGS_DIR)
+        if len(allLogs) < 1:
+            prettyPrint("Could not find any droidmon logs under \"%s\"" % LOGS_DIR, "warning")
+            return [], []#, []
+
+        prettyPrint("Successfully retrieved a total of %s logs" % len(allLogs))
+        # Load traces
+        for log in allLogs:
+            # Retrieve the log's label according to a labeling scheme
+            logLabel = -1
+            tmp = log[log.rfind("/")+1:].replace(".filtered", "")
+            logKey = tmp[:tmp.find("_")]
+            if os.path.exists("%s/%s.report" % (VT_REPORTS_DIR, logKey)):
+                report = eval(open("%s/%s.report" % (VT_REPORTS_DIR, logKey)).read())
+                prettyPrint("VirusTotal report \"%s.report\" found" % logKey, "debug")
+                if "positives" in report.keys():
+                    if labeling == "old":
+                        if "additional_info" in report.keys():
+                            if "positives_delta" in report["additional_info"].keys():
+                                logLabel = 1 if report["positives"] - report["additional_info"]["positives_delta"] >= 1 else 0
+                        else:
+                            continue
+                    if labeling == "vt1-vt1":
+                        logLabel = 1 if report["positives"] >= 1 else 0
+                    elif labeling == "vt50p-vt50p":
+                        logLabel = 1 if report["positives"]/float(report["total"]) >= 0.5 else 0
+                    elif labeling == "vt50p-vt1":
+                        if report["positives"]/float(report["total"]) >= 0.5:
+                            logLabel = 1
+                        elif report["positives"] == 0:
+                            logLabel = 0
+                        else:
+                            logLabel = -1
+
+            if logLabel == -1:
+                prettyPrint("Could not label log \"%s\". Skipping" % log, "warning")
+                continue
+            elif logLabel == 1:
+                prettyPrint("Log \"%s\" is malicious according to \"%s\". Skipping" % (log, labeling), "error")
+                continue
+
+            trace = parseDroidmonLog(log, includeArguments=includeArguments)
+            traces.append(trace) # Add trace
+            for action in trace:
+                if not action in actions:
+                    actions.append(action) # Add action
+
+            # Add label
+            #labels.append(logLabel)
+            
+    except Exception as e:
+        prettyPrintError(e)
+        return [], []#, []
+
+    return traces, actions#, labels
+
 def rgb_to_hex(rgb):
     return '%02x%02x%02x' % rgb
 
@@ -766,3 +1208,36 @@ def simImages(imgA, imgB):
         return 0.0      
 
     return score
+
+def summarizeVirusTotalData(vtReport):
+    """
+    Summarizes the runtime behavior exhibited by an app according to VirusTotal
+    :param vtReport: The path to the VirusTotal report to summarize
+    :type data: str
+    :return: A tuple of (str, list[int...]) depicting the key of the report (e.g., hash), and a vector of numerical values depicting the counts of different keys (e.g., accessed files)
+    """
+    try:
+        summary = ()
+        report = eval(open(vtReport).read())
+        reportKey = vtReport[vtReport.rfind("/")+1:].replace(".report", "")
+        reportVector = [0.0] * len(allVirusTotalKeys)
+        for key in allVirusTotalKeys:
+            if key in report["additional_info"]["android-behaviour"] and key != "sandbox-version":
+                reportVector[allVirusTotalKeys.index(key)] = len(report["additional_info"]["android-behaviour"][key])
+
+        summary = (reportKey, reportVector)
+
+    except Exception as e:
+        prettyPrintError(e)
+        return ()
+
+    return summary
+
+def tracesRatio(trace1, trace2):
+    if len(trace1) == 0 or len(trace2) == 0:
+        return 0.0
+
+    intersection = float(len(list(set(trace1).intersection(trace2))))
+    union = float((len(set(trace1)) + len(set(trace2))) - intersection)
+    return float(intersection / union)
+
