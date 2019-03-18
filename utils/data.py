@@ -12,7 +12,40 @@ import networkx as nx
 from skimage.measure import compare_ssim
 import imutils
 import cv2
+from alignment.sequence import Sequence
+from alignment.vocabulary import Vocabulary
+from alignment.sequencealigner import SimpleScoring, GlobalSequenceAligner
 
+def alignDroidmonTraces(fstTrace, scndTrace):
+    """
+    Aligns two Droidmon sequences in terms of their API calls a la protein sequence alignment
+    :param fstTrace: The first droidmon trace to align
+    :type fstTrace: list of str
+    :param scndTrace: The second droidmon trace to align
+    :type scndTrace: list of str
+    :return: A float depicting alignment score (number of alignments / len(min(fstTrace, scndTrace))
+    """
+    try:
+        scores = []
+        a, b = Sequence(fstTrace), Sequence(scndTrace)
+        v = Vocabulary()
+        aEncoded, bEncoded = v.encodeSequence(a), v.encodeSequence(b)
+        # Define scoring: +1 for match, -1 for mismatch
+        scoring = SimpleScoring(1, -1)
+        aligner = GlobalSequenceAligner(scoring, -1) # -1 for alignment gap
+        score, encodeds = aligner.align(aEncoded, bEncoded, backtrace=True)
+        for encoded in encodeds:
+            alignment = v.decodeSequenceAlignment(encoded)
+            score = float(alignment.identicalCount)/len(min(fstTrace, scndTrace))
+            scores.append(score)
+
+    except Exception as e:
+        prettyPrintError(e)
+        return 0.0
+
+    score = 0.0 if len(scores) == 0 else sum(scores)/float(len(scores))
+
+    return score
 
 def compareVirusTotalBehavior(behavior1, behavior2):
     """
@@ -830,17 +863,21 @@ def matchAppsDynamic(sourceAPK, dataSource="droidmon", fastSearch=True, includeA
 
     return matchings
 
-def matchTrace(sourceApp, compareTraces=False, includeArguments=False, matchingThreshold=0.50, labeling="vt1-vt1"):
+def matchTrace(sourceApp, alignTraces=False, compareTraces=False, includeArguments=False, matchingThreshold=0.50, maxChunkSize=0, labeling="vt1-vt1"):
     """
     Matches a droidmon trace to other droidmon traces in dejavu's repository organized as clusters according to their lengths
     :param sourceApp: The path to the APK whose trace we wish to match
     :type sourceApp: str
+    :param alignTraces: Whether to measure trace similarity according to alignment
+    :type alignTraces: boolean
     :param compareTraces: Whether to compare traces or settle for labels of traces in a cluster
     :type compareTraces: boolean
     :param includeArguments: Whether to include method arguments in droidmon traces
     :type includeArguments: boolean
     :param matchingThreshold: A similarity percentage above which apps are considered similar
     :type matchingThreshold: float
+    :maxChunkSize: The maximum size of chunks to shorten in traces (default: 0)
+    :type maxChunkSize: int
     :param labeling: The labeling scheme adopted to label APK's as malicious and benign
     :type labeling: str
     :return: A list of tuples (str, (float, float)) depicting the matched app, the similarity measure and the matched app's label
@@ -878,8 +915,14 @@ def matchTrace(sourceApp, compareTraces=False, includeArguments=False, matchingT
            clusterFile = "%s/dejavu_traces_length_150175.txt" % LOOKUP_STRUCTS
        elif len(sourceTrace) >= 175 and len(sourceTrace) < 200:
            clusterFile = "%s/dejavu_traces_length_175200.txt" % LOOKUP_STRUCTS
-       elif len(sourceTrace) >= 200:
-           clusterFile = "%s/dejavu_traces_length_200.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 200 and len(sourceTrace) < 300:
+           clusterFile = "%s/dejavu_traces_length_200300.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 300 and len(sourceTrace) < 400:
+           clusterFile = "%s/dejavu_traces_length_300400.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 400 and len(sourceTrace) < 500:
+           clusterFile = "%s/dejavu_traces_length_400500.txt" % LOOKUP_STRUCTS
+       elif len(sourceTrace) >= 500:
+           clusterFile = "%s/dejavu_traces_length_500.txt" % LOOKUP_STRUCTS
        
        # Load the traces in the designated cluster
        prettyPrint("Loading cluster file \"%s\"" % clusterFile)
@@ -904,7 +947,11 @@ def matchTrace(sourceApp, compareTraces=False, includeArguments=False, matchingT
    
                targetLabel = getVTLabel(targetKey, labeling)
                targetTrace = parseDroidmonLog(log, includeArguments=includeArguments)
-               similarity = tracesRatio(targetTrace, sourceTrace)
+               if maxChunkSize >= 1:
+                   sourceTrace = shortenDroidmonTrace(sourceTrace, maxChunkSize=maxChunkSize)
+                   targetTrace = shortenDroidmonTrace(targetTrace, maxChunkSize=maxChunkSize)
+
+               similarity = tracesRatio(targetTrace, sourceTrace) if alignTraces == False else alignDroidmonTraces(sourceTrace, targetTrace)
                if similarity >= matchingThreshold:
                    prettyPrint("Got a match between \"%s\" and \"%s\" of %s" % (targetKey, sourceKey, similarity), "output")
                    matchings.append((targetKey, (similarity, targetLabel)))
@@ -1208,6 +1255,45 @@ def simImages(imgA, imgB):
         return 0.0      
 
     return score
+
+def shortenDroidmonTrace(trace, maxChunkSize=3):
+    """
+    Shortens a Droidmon trace by removing redundant chunks of API calls
+    :param trace: The Droidmon trace to shorten
+    :type trace: list of str
+    :param maxChunkSize: The maximum size of a chunk to consider (default: 3)
+    :type maxChunkSize: int
+    :return: A list of str depicting the shortened trace
+    """ 
+    try:
+        # Assume maxChunkSize = 1 anyway
+        shortened = []
+        previousAction = ""
+        for action in trace:
+            if action != previousAction:
+                shortened.append(action)
+
+            previousAction = action
+        # Go for chunks of length > 1
+        if maxChunkSize > 1:
+            for chunkSize in range(maxChunkSize, maxChunkSize+1):
+                chunks = [shortened[x:x+chunkSize] for x in xrange(0, len(shortened), chunkSize)]
+                tmpTrace = []
+                previousChunk = []
+                for chunk in chunks:
+                    if chunk != previousChunk:
+                        tmpTrace = tmpTrace + chunk
+
+                    previousChunk = chunk
+
+                # Update the shortened trace
+                shortened = [] + tmpTrace
+
+    except Exception as e:
+        prettyPrintError(e)
+        return []
+
+    return shortened
 
 def summarizeVirusTotalData(vtReport):
     """

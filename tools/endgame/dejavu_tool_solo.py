@@ -27,6 +27,8 @@ def defineArguments():
     parser.add_argument("-c", "--classifier", help="The path to the classifier to train as part of the \"prob_classifier\" mode", required=False)
     parser.add_argument("-r", "--clusters", help="The path to the file containing the benign apps clusters used by \"quick_matching\"", required=False)
     parser.add_argument("-m", "--comparetraces", help="Whether to compare droidmon logs or rely on VirusTotal info to label apps as part of \"dynamic_matching\"", required=False, default="yes", choices=["yes", "no"])
+    parser.add_argument("-g", "--aligntraces", help="Whether to compare droidmon logs by aligning them as part of \"dynamic_matching\"", required=False, default="yes", choices=["yes", "no"])
+    parser.add_argument("-k", "--chunksize", help="The maximum size of chunks to shorten in the droidmon logs", required=False, default=0, type=int)
     parser.add_argument("-t", "--thresholds", help="The thresholds used during the experiments, depicts: (1) percentage beyond which apps are considered similar, and (2) the classification confidence (percentage) used by naive Bayes classifiers to assign apps to classes", type=float, required=False, default=0.80)
     parser.add_argument("-o", "--hmmthreshold", help="The negative threshold to be used by HMM in classifying apps", required=False, default=-250, type=int)
     parser.add_argument("-q", "--hmmlength", help="The maximum length of the trace to consider for classification using HMM", required=False, default=100, type=int)
@@ -270,7 +272,7 @@ def main():
                 ###########################
                 prettyPrint("Commencing dynamic matching")
                 compareTraces = True if arguments.comparetraces == "yes" else False
-                matchings = matchTrace(app, compareTraces=compareTraces, includeArguments=arguments.includeargs, labeling=arguments.labeling)
+                matchings = matchTrace(app, alignTraces=arguments.aligntraces, compareTraces=compareTraces, includeArguments=arguments.includeargs, maxChunkSize=arguments.chunksize, labeling=arguments.labeling)
                 prettyPrint("Successfully matched app \"%s\" with %s apps" % (app, len(matchings)))
                 malicious = 0
                 if len(matchings) > 0:
@@ -402,7 +404,7 @@ def main():
         elif arguments.technique == "prob_classifier":
             fileName = "Dejavu_results_prob_classifier_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.thresholds)
         elif arguments.technique == "dynamic_matching":
-            fileName = "Dejavu_results_dynamic_matching_%s_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.comparetraces, arguments.includeargs)
+            fileName = "Dejavu_results_dynamic_matching_%s_%s_%s_%s_%s.txt" % (arguments.experimentlabel, arguments.labeling, arguments.aligntraces, arguments.chunksize, arguments.includeargs)
         elif arguments.technique == "hmm":
             fileName = "Dejavu_results_hmm_%s_%s_%s_%s_%sargs.txt" % (arguments.experimentlabel, arguments.labeling, arguments.hmmthreshold, arguments.hmmlength, arguments.includeargs)
 
