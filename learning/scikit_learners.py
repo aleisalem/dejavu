@@ -38,6 +38,7 @@ def calculateMetrics(truth, predicted):
         metrics["specificity"] = specificity_score(truth, predicted) # From Aion.utils.misc
         metrics["precision"] = precision_score(truth, predicted)
         metrics["f1score"] = f1_score(truth, predicted)
+        metrics["mcc"] = matthews_corrcoef(truth, predicted)
 
     except Exception as e:
         prettyPrintError(e)

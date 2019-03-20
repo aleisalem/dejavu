@@ -99,29 +99,31 @@ def reduceAndVisualize(X, y, dim=2, reductionAlgorithm="tsne", figSize=(1024,102
                     else:
                         x1_good.append(X_new[index][0])
                         x2_good.append(X_new[index][1])
-            #print len(x1_mal), len(x2_mal)
-            #print len(x1_good), len(x2_good)
-            plt.scatter(x1_good, x2_good, c=RGB[1], alpha=1.0, marker='o', label="Goodware")
-            plt.scatter(x1_mal, x2_mal, c=RGB[0], alpha=1.0, marker='^', label="Malware")
-            plt.xlabel("x1")
-            plt.ylabel("x2")
-            plt.tick_params(
-                axis='x',          # changes apply to the x-axis
-                which='both',      # both major and minor ticks are affected
-                bottom=True,       # ticks along the bottom edge are on
-                top=False,         # ticks along the top edge are off
-                labelbottom=False)
-            plt.tick_params(
-                axis='y',          # changes apply to the y-axis
-                which='both',      # both major and minor ticks are affected
-                left=True,         # ticks along the left edge are on
-                top=False,         # ticks along the top edge are off
-                labelleft=False)
-            plt.legend(loc='best')
-            #plt.show()
-
-            plt.savefig('Visualization_%s.pdf' % figTitle.replace(" ", "_").lower())
-            plt.savefig('Visualization_%s.pgf' % figTitle.replace(" ", "_").lower())
+                #print len(x1_mal), len(x2_mal)
+                #print len(x1_good), len(x2_good)
+                fig = plt.figure()
+                plt.scatter(x1_good, x2_good, c=RGB[1], alpha=1.0, marker='o', label="Goodware")
+                plt.scatter(x1_mal, x2_mal, c=RGB[0], alpha=1.0, marker='^', label="Malware")
+                plt.xlabel("x1")
+                plt.ylabel("x2")
+                plt.tick_params(
+                    axis='x',          # changes apply to the x-axis
+                    which='both',      # both major and minor ticks are affected
+                    bottom=True,       # ticks along the bottom edge are on
+                    top=False,         # ticks along the top edge are off
+                    labelbottom=False)
+                plt.tick_params(
+                    axis='y',          # changes apply to the y-axis
+                    which='both',      # both major and minor ticks are affected
+                    left=True,         # ticks along the left edge are on
+                    top=False,         # ticks along the top edge are off
+                    labelleft=False)
+                plt.legend(loc='best')
+                #plt.show()
+    
+                plt.savefig('Visualization_%s.pdf' % figTitle.replace(" ", "_").lower())
+                plt.savefig('Visualization_%s.pgf' % figTitle.replace(" ", "_").lower())
+                plt.close(fig)
 
 
         elif plottingTool == "plotly":
